@@ -140,58 +140,75 @@ def expand_chapters_list(page):
         # Pausa inicial aleatória de 2 a 6 segundos (admirando a página)
         page.wait_for_timeout(random.randint(2000, 6000))
 
-        # 1. Jornada de descida ultra-suave: Deslize contínuo sem quebrar o layout
-        logging.info("  -> [*] Descendo a tela fluidamente...")
-        scroll_limit = 60  # Ciclos completos de descida
-        for _ in range(scroll_limit):
-            # Fase de Deslize: 8 a 15 micro-toques minúsculos contínuos (60 FPS feel)
-            # Isso cria a sensação de acelerar e reduzir continuamente
-            for _ in range(random.randint(8, 15)):
-                page.mouse.wheel(0, random.randint(20, 50))
-                page.wait_for_timeout(random.randint(15, 30))
+        # 1. Jornada de descida mecânica e ultra-suave (Alta frequência - "60FPS Feel")
+        logging.info("  -> [*] Descendo a tela mecanicamente de forma contínua...")
 
-            # Fim do embalo: Pequena chance de engasgar e puxar pra cima levemente
-            if random.random() < 0.15:
-                for _ in range(random.randint(2, 4)):
-                    page.mouse.wheel(0, random.randint(-40, -15))
-                    page.wait_for_timeout(random.randint(15, 30))
+        hit_comments = False
+        frame_counter = 0
 
-            # AVALIAÇÃO VISUAL (Fora do loop de FPS para não travar o navegador)
-            btn = page.query_selector("#ver-mais")
-            if btn and btn.is_visible():
-                page.wait_for_timeout(random.randint(300, 700))
-                page.mouse.move(
-                    random.randint(200, 600),
-                    random.randint(200, 500),
-                    steps=random.randint(5, 12),
-                )
+        # Simulando um "Event Loop" de alta frequência usando apenas hardware simulado
+        for _ in range(
+            800
+        ):  # Máximo de 800 "frames" de segurança para não rodar infinitamente
+            frame_counter += 1
 
-                try:
-                    btn.click(force=True, timeout=3000, delay=random.randint(50, 200))
-                    logging.info(
-                        "  -> [*] Clicou em 'Ver Mais' durante a descida fluida..."
+            # Gira a roda do mouse em pequenos incrementos (20 a 60 pixels)
+            speed = random.randint(20, 60)
+            page.mouse.wheel(0, speed)
+
+            # Delay minúsculo (~16ms ideal para 60fps), o Playwright adiciona uns 5-10ms de overhead de rede
+            page.wait_for_timeout(random.randint(10, 20))
+
+            # A cada 15 frames (aprox 400ms), paramos para olhar a tela.
+            # Não olhamos todo frame para não "engasgar" a rolagem com processamento de DOM.
+            if frame_counter % 15 == 0:
+                # Imprecisão humana: de vez em quando a pessoa volta a roda sem querer
+                if random.random() < 0.2:
+                    page.mouse.wheel(0, random.randint(-50, -10))
+
+                # Olha se o botão de "Ver Mais" apareceu flutuando na tela
+                btn = page.query_selector("#ver-mais")
+                if btn and btn.is_visible():
+                    # Move o mouse acompanhando a descida pra fazer o clique
+                    page.mouse.move(
+                        random.randint(200, 600),
+                        random.randint(200, 500),
+                        steps=random.randint(5, 10),
                     )
-                except Exception:
-                    pass
+                    try:
+                        # Clique rápido "no ar"
+                        btn.click(
+                            force=True, timeout=2000, delay=random.randint(30, 80)
+                        )
+                        logging.info(
+                            "  -> [*] Clicou em 'Ver Mais' no embalo da descida!"
+                        )
 
-                # Pausa orgânica aguardando o carregamento da nova lista
-                page.wait_for_timeout(random.randint(1500, 2500))
+                        # Pausa orgânica aguardando as novas divs carregarem (como alguém respirando)
+                        page.wait_for_timeout(random.randint(800, 1500))
+                    except Exception:
+                        pass
 
-            # Verifica se atingiu os comentários
-            form_comment = page.query_selector("#form-comentar, .form-comentario")
-            if form_comment and form_comment.is_visible():
-                # Confirma se acabaram os botões de carregar mais
-                btn_left = page.query_selector("#ver-mais")
-                if not btn_left or not btn_left.is_visible():
-                    logging.info(
-                        "  -> [*] Atingiu a seção de comentários de forma fluida."
+                # A cada 30 frames, avaliamos se chegamos no final verdadeiro (comentários)
+                if frame_counter % 30 == 0:
+                    form_comment = page.query_selector(
+                        "#form-comentar, .form-comentario"
                     )
-                    # Ajeitadinha sutil final
-                    for _ in range(3):
-                        page.mouse.wheel(0, random.randint(-30, 30))
-                        page.wait_for_timeout(20)
-                    page.wait_for_timeout(random.randint(1000, 2000))
-                    break
+                    if form_comment and form_comment.is_visible():
+                        # Confirma se ainda tem botão sobrando pra expandir
+                        btn_left = page.query_selector("#ver-mais")
+                        if not btn_left or not btn_left.is_visible():
+                            logging.info(
+                                "  -> [*] Atingiu a seção de comentários fisicamente."
+                            )
+                            hit_comments = True
+                            break
+
+        if hit_comments:
+            # Freiada mecânica suave no fim
+            for _ in range(5):
+                page.mouse.wheel(0, random.randint(10, 20))
+                page.wait_for_timeout(30)
 
         # 2. Comportamento pesado de leitura entre os comentários e o rodapé
         logging.info("  -> [*] Simulando leitura dos comentários (Pausas erráticas)...")
