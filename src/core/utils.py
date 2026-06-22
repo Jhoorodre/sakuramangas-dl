@@ -55,7 +55,7 @@ def handle_cloudflare(page, context, state_file):
                 > 0
             ):
                 return True
-        except:
+        except Exception:
             pass
         return False
 
@@ -69,7 +69,7 @@ def handle_cloudflare(page, context, state_file):
                 try:
                     context.storage_state(path=state_file)
                     format_state_file(state_file)
-                except:
+                except Exception:
                     pass
                 break
             try:
@@ -85,7 +85,7 @@ def handle_cloudflare(page, context, state_file):
                     random.randint(100, 600),
                     delay=random.randint(50, 200),
                 )
-            except:
+            except Exception:
                 pass
             page.wait_for_timeout(random.randint(850, 2400))
 
@@ -103,7 +103,7 @@ def activate_scroll_mode(page):
             '.footer-text-col, .toggle-view-mode, .chapter-list, button[title="Modo de Leitura"]',
             timeout=180000,
         )
-    except:
+    except Exception:
         logging.warning(
             "[PIPELINE] O Leitor demorou muito para renderizar (ou o Captcha não foi resolvido a tempo)."
         )
@@ -121,7 +121,7 @@ def activate_scroll_mode(page):
                         btn_scroll.click(
                             force=True, timeout=2000, delay=random.randint(100, 300)
                         )
-                    except:
+                    except Exception:
                         pass
                     page.wait_for_timeout(random.randint(850, 2400))
                 else:
@@ -171,7 +171,7 @@ def expand_chapters_list(page):
                     logging.info(
                         "  -> [*] Clicou em 'Ver Mais' durante a descida fluida..."
                     )
-                except:
+                except Exception:
                     pass
 
                 # Pausa orgânica aguardando o carregamento da nova lista
@@ -215,7 +215,7 @@ def expand_chapters_list(page):
                 "window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});"
             )
             page.wait_for_timeout(random.randint(1500, 3000))
-        except:
+        except Exception:
             pass
 
         return True

@@ -111,7 +111,7 @@ class SakuraScraper:
                 try:
                     # Removemos o time.sleep bloqueante! O rate limit agora é ditado puramente pela física do Scroll Suave
                     route.continue_()
-                except:
+                except Exception:
                     pass
 
             page.route("**/*", throttle_traffic)
@@ -252,7 +252,7 @@ class SakuraScraper:
                     # Se tiver um overlay bloqueando a página, tentamos clicar nele
                     try:
                         page.mouse.click(500, 500)
-                    except:
+                    except Exception:
                         pass
 
                 timeout -= 1
@@ -388,7 +388,7 @@ class SakuraScraper:
             try:
                 context.storage_state(path=self.state_file)
                 format_state_file(self.state_file)
-            except:
+            except Exception:
                 pass
             context.close()
             return True
@@ -403,7 +403,7 @@ class SakuraScraper:
                 search_url = f"https://sakuramangas.org/?s={query.replace(' ', '+')}"
                 try:
                     page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
-                except:
+                except Exception:
                     pass
 
                 handle_cloudflare(page, context, self.state_file)
@@ -427,7 +427,7 @@ class SakuraScraper:
                 try:
                     context.storage_state(path=self.state_file)
                     format_state_file(self.state_file)
-                except:
+                except Exception:
                     pass
                 context.close()
 
@@ -468,7 +468,7 @@ class SakuraScraper:
                 try:
                     context.storage_state(path=self.state_file)
                     format_state_file(self.state_file)
-                except:
+                except Exception:
                     pass
                 context.close()
 

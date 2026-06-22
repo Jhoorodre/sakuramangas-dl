@@ -173,12 +173,12 @@ def download_chapters():
                     try:
                         s, e = part.split("-")
                         ranges.append((float(s), float(e)))
-                    except:
+                    except Exception:
                         pass
                 else:
                     try:
                         specifics.add(float(part))
-                    except:
+                    except Exception:
                         pass
 
             # Processar de trás pra frente (ordem cronológica de lançamento)

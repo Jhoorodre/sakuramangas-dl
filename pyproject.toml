@@ -21,5 +21,4 @@ dependencies = [
 [project.scripts]
 sakura-dl = "src.main:main"
 
-[tool.ruff.lint]
-ignore = ["E701", "E722", "E501", "E402", "F401"]
+
