@@ -310,15 +310,25 @@ def add_urls_interactively():
         # Pode ser que o usuário cole urls separadas por espaço ou virgula na mesma linha
         # Ou multiplas linhas de uma vez se o terminal suportar multiline paste
         for piece in line.split():
-            if piece.startswith("http"):
-                urls.append(piece.strip('",[]'))
+            # Limpa lixo do começo e fim antes de validar
+            clean_piece = piece.strip('",[] \n')
+            if clean_piece.startswith("http"):
+                # Retira a barra final que possa ter sobrado
+                clean_url = clean_piece.rstrip("/")
+                urls.append(clean_url)
 
     if urls:
-        print(f"\n[*] Processando {len(urls)} URLs...")
-        added = MangaManager.add_urls_to_toml(urls)
+        # Remove duplicatas dentro do próprio lote que o usuário colou agora
+        unique_urls = []
+        for u in urls:
+            if u not in unique_urls:
+                unique_urls.append(u)
+
+        print(f"\n[*] Processando {len(unique_urls)} URLs únicas do lote...")
+        added = MangaManager.add_urls_to_toml(unique_urls)
         print(f"[+] {added} NOVAS URLs adicionadas ao mapping.toml com sucesso!")
-        if len(urls) > added:
-            print(f"[*] {len(urls) - added} URLs já existiam e foram ignoradas.")
+        if len(unique_urls) > added:
+            print(f"[*] {len(unique_urls) - added} URLs já existiam e foram ignoradas.")
     else:
         print("\nNenhuma URL válida encontrada.")
 

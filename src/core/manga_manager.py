@@ -27,7 +27,7 @@ class MangaManager:
                         for line in f:
                             if line.strip().startswith('"'):
                                 raw_url = line.split('"')[1]
-                                toml_links.append(raw_url)
+                                toml_links.append(raw_url.rstrip("/"))
             except Exception:
                 pass
         return toml_links
