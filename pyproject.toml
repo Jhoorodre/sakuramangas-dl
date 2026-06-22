@@ -9,13 +9,14 @@ description = "Extrator automatizado de mangás em Python para sakuramangas.org"
 readme = "README.md"
 requires-python = ">=3.8"
 authors = [
-  { name = "Etoshy", email = "rivansmilew@gmail.com" },
+  { name = "Jhoorodre" },
 ]
 license = { text = "MIT" }
 urls = { Repository = "https://github.com/Jhoorodre/sakuramangas-dl" }
 dependencies = [
     "playwright>=1.40.0",
-    "tomli>=2.0.1; python_version < '3.11'"
+    "tomli>=2.0.1; python_version < '3.11'",
+    "python-dotenv>=1.0.0"
 ]
 
 [project.scripts]

@@ -1,8 +1,10 @@
 import argparse
+from dotenv import load_dotenv
 from core.scraper import SakuraScraper
 
 
 def main():
+    load_dotenv()
     parser = argparse.ArgumentParser(
         description="Sakura Mangas Downloader 2.0 (The Ghost Scraper)"
     )

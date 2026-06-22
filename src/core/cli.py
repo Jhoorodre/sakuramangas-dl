@@ -1,15 +1,11 @@
 import os
-import sys
 import glob
 import json
-import re
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    pass  # Compatibilidade com Python < 3.11
 
 from src.core.scraper import SakuraScraper
+
+
+from src.core.manga_manager import MangaManager
 
 
 def clear_screen():
@@ -19,8 +15,8 @@ def clear_screen():
 def print_banner():
     banner = """
     Sakura Mangas Downloader
-    Criado por Etoshy
-    https://github.com/etoshy/Sakura-Mangas-Downloader/
+    Criado por Jhoorodre
+    https://github.com/Jhoorodre/sakuramangas-dl/
     """
     print(banner)
 
@@ -29,25 +25,9 @@ def download_chapters():
     clear_screen()
     print("=== Baixar Capítulos Específicos ===")
 
-    # Pré-carregar o mapping.toml para mostrar o menu
-    toml_path = "mapping.toml"
-    toml_links = []
-    if os.path.exists(toml_path):
-        try:
-            if "tomllib" in sys.modules:
-                with open(toml_path, "rb") as f:
-                    data = tomllib.load(f)
-                    toml_links = data.get("mangas", {}).get("urls", [])
-            else:
-                with open(toml_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.strip().startswith('"http'):
-                            toml_links.append(line.split('"')[1])
-        except Exception:
-            pass
-
+    toml_links = MangaManager.read_toml_links()
     if toml_links:
-        print(f"Mangás cadastrados no {toml_path}:")
+        print("Mangás cadastrados no mapping.toml:")
         for i, url in enumerate(toml_links, 1):
             name = url.strip("/").split("/")[-1].replace("-", " ").title()
             print(f"[{i}] {name}")
@@ -69,10 +49,8 @@ def download_chapters():
     elif escolha.startswith("http"):
         links = [escolha]
     else:
-        # Pesquisa inteligente!
         print(f"\n[*] Pesquisando '{escolha}' no SakuraMangas...")
         resultados = scraper.search_manga(escolha)
-
         if not resultados:
             print("[-] Nenhum mangá encontrado com esse nome.")
             input("Pressione Enter para continuar...")
@@ -88,12 +66,10 @@ def download_chapters():
         if not idx.isdigit() or not (1 <= int(idx) <= len(resultados)):
             print("Operação cancelada.")
             return
-
         links = [resultados[int(idx) - 1]["url"]]
 
     for manga_url in links:
         print(f"\n[*] Identificando Obra: {manga_url}")
-
         try:
             manga_data = scraper.get_chapters(manga_url)
             if not manga_data or "chapters" not in manga_data:
@@ -102,52 +78,19 @@ def download_chapters():
 
             manga_title = manga_data.get("title", "Desconhecido")
             chapters_dict = manga_data.get("chapters", {})
+            scanlator = (
+                list(chapters_dict.values())[0].get("scanlator", "")
+                if chapters_dict
+                else ""
+            )
 
-            scanlator = ""
-            if chapters_dict:
-                first_cap = list(chapters_dict.values())[0]
-                scanlator = first_cap.get("scanlator", "")
-
-            manga_folder = f"{manga_title} - {scanlator}" if scanlator else manga_title
-            manga_folder = re.sub(r'[\\/:*?"<>|]', "", manga_folder)
-
-            # Criar a pasta base da obra
-            manga_base_dir = os.path.join("download", manga_folder)
-            os.makedirs(manga_base_dir, exist_ok=True)
-
-            # Salvar TAMBÉM na pasta /data/nome_da_obra.json conforme solicitado!
-            data_dir = "data"
+            manga_folder = MangaManager.format_manga_folder(manga_title, scanlator)
+            manga_base_dir = os.path.join(MangaManager.DOWNLOAD_DIR, manga_folder)
+            data_dir = MangaManager.DATA_DIR
             os.makedirs(data_dir, exist_ok=True)
-            safe_name = manga_title.lower().replace(" ", "_").replace("-", "_")
-            safe_name = re.sub(r"[^a-z0-9_]", "", safe_name)
-            json_path_data = os.path.join(data_dir, f"{safe_name}.json")
 
-            # Fusão de Memória: Lê o JSON antigo para preservar o status "downloaded" dos capítulos movidos e checa novidades
-            if os.path.exists(json_path_data):
-                with open(json_path_data, "r", encoding="utf-8") as f:
-                    old_data = json.load(f)
+            json_path_data = MangaManager.save_manga_data(manga_data, chapters_dict)
 
-                if "chapters" in old_data:
-                    for cid, cdata in chapters_dict.items():
-                        if cid in old_data["chapters"]:
-                            cdata["downloaded"] = old_data["chapters"][cid].get(
-                                "downloaded", False
-                            )
-
-                    manga_data["latest_downloaded_chapter"] = old_data.get(
-                        "latest_downloaded_chapter", 0.0
-                    )
-
-                    novos = len(chapters_dict) - len(old_data["chapters"])
-                    if novos > 0:
-                        print(
-                            f"\n[HOT] O site possui {novos} capítulo(s) a mais do que o seu JSON antigo! A fila foi atualizada."
-                        )
-
-            with open(json_path_data, "w", encoding="utf-8") as f:
-                json.dump(manga_data, f, ensure_ascii=False, indent=4)
-
-            # Baixar a capa automaticamente se existir!
             if manga_data.get("cover"):
                 cover_path = os.path.join(manga_base_dir, "cover.jpg")
                 if not os.path.exists(cover_path):
@@ -162,76 +105,25 @@ def download_chapters():
                 print("[*] Pulando...")
                 continue
 
-            # Parse da seleção do usuário (suporta ranges 5-10 e decimais 19.2)
-            specifics = set()
-            ranges = []
-            for part in selection.split(","):
-                part = part.strip()
-                if not part:
-                    continue
-                if "-" in part and part.count("-") == 1:
-                    try:
-                        s, e = part.split("-")
-                        ranges.append((float(s), float(e)))
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        specifics.add(float(part))
-                    except Exception:
-                        pass
-
-            # Processar de trás pra frente (ordem cronológica de lançamento)
+            specifics, ranges = MangaManager.parse_chapter_selection(selection)
             overwrite_all = False
+
             for cap_id, cap in reversed(list(chapters_dict.items())):
                 raw_name = cap.get("name", "Cap 00")
+                chap_num = MangaManager.get_chap_num_from_name(raw_name)
 
-                # Extrai o número do capítulo do nome (Ex: "Cap. 24 - Titulo" -> 24.0)
-                chap_num = -1.0
-                match = re.search(r"Cap\.?\s*([\d\.]+)", raw_name)
-                if match:
-                    chap_num = float(match.group(1))
-
-                # Verifica se o capítulo está na seleção do usuário
-                selected = False
-                if chap_num in specifics:
-                    selected = True
-                for s, e in ranges:
-                    if s <= chap_num <= e:
-                        selected = True
-                        break
-
-                if selected:
+                if MangaManager.is_chapter_selected(chap_num, specifics, ranges):
                     url = cap.get("url")
                     if not url.startswith("http"):
                         url = "https://sakuramangas.org" + url
 
-                    chapter_folder = re.sub(
-                        r"Cap\.\s*([\d\.]+)",
-                        lambda m: f"Cap {float(m.group(1)):06.2f}".replace(".00", "")
-                        .replace(".", ",")
-                        .zfill(3),
-                        raw_name,
-                    )
-                    # Fallback mais simples para o regex de nome de pasta
-                    chapter_folder = re.sub(
-                        r"Cap\.\s*([\d\.]+)",
-                        lambda m: f"Cap {m.group(1).zfill(3)}",
-                        raw_name,
-                    )
-                    chapter_folder = re.sub(r'[\\/:*?"<>|]', "", chapter_folder)
+                    chapter_folder = MangaManager.format_chapter_folder(raw_name)
                     chapter_path = os.path.join(
-                        "download", manga_folder, chapter_folder
+                        MangaManager.DOWNLOAD_DIR, manga_folder, chapter_folder
                     )
-
-                    # Verificação Bilateral Interativa (Opção 1)
-                    is_physically_downloaded = False
-                    if os.path.exists(chapter_path):
-                        if any(
-                            f.startswith("pag_") and f.endswith(".jpg")
-                            for f in os.listdir(chapter_path)
-                        ):
-                            is_physically_downloaded = True
+                    is_physically_downloaded = MangaManager.is_physically_downloaded(
+                        chapter_path
+                    )
 
                     do_download = True
                     if is_physically_downloaded:
@@ -262,7 +154,7 @@ def download_chapters():
                     else:
                         if cap.get("downloaded"):
                             print(
-                                f"\n[?] O {chapter_folder} consta no JSON como BAIXADO, mas sumiu da pasta (foi movido?)."
+                                f"\n[?] O {chapter_folder} consta no JSON como BAIXADO, mas sumiu da pasta."
                             )
                             ans = (
                                 input(
@@ -272,9 +164,7 @@ def download_chapters():
                                 .lower()
                             )
                             if ans != "s":
-                                print(
-                                    "  -> [PULO] Ignorando re-download. Mantendo flag True no JSON."
-                                )
+                                print("  -> [PULO] Ignorando re-download.")
                                 cap["downloaded"] = True
                                 do_download = False
 
@@ -282,28 +172,12 @@ def download_chapters():
                         print(
                             f"  -> Baixando: {chapter_folder} na pasta {manga_folder}"
                         )
-                        success = scraper.download_chapter(
+                        if scraper.download_chapter(
                             url, manga_name=manga_folder, chapter_name=chapter_folder
-                        )
-                        if success:
+                        ):
                             cap["downloaded"] = True
 
-            # Calcula e salva o maior capítulo baixado no cabeçalho do JSON
-            highest_downloaded = 0.0
-            for cap_id, cap in chapters_dict.items():
-                if cap.get("downloaded", False):
-                    raw_name = cap.get("name", "Cap 00")
-                    match = re.search(r"Cap\.?\s*([\d\.]+)", raw_name)
-                    if match:
-                        num = float(match.group(1))
-                        if num > highest_downloaded:
-                            highest_downloaded = num
-
-            manga_data["latest_downloaded_chapter"] = highest_downloaded
-
-            # Salva a Verificação Bilateral de volta no JSON
-            with open(json_path_data, "w", encoding="utf-8") as f:
-                json.dump(manga_data, f, ensure_ascii=False, indent=4)
+            MangaManager.update_latest_downloaded(manga_data, json_path_data)
 
         except Exception as e:
             print(f"[-] Erro na operação com {manga_url}: {e}")
@@ -316,38 +190,19 @@ def download_complete_manga():
     print("=== Baixar Mangá Completo ===")
     print("Digite os links dos mangás separados por vírgula (,)")
     print("Ou digite o nome de um arquivo TOML (ex: mapping.toml)")
-    print("Exemplo: https://sakuramangas.org/obras/shin-kirari")
     print("\nDigite os links ou arquivo:")
 
     links_input = input("> ").strip()
     if not links_input:
-        print("Nenhum link fornecido. Voltando ao menu...")
-        input("Pressione Enter para continuar...")
         return
 
-    # Suporte para carregar fila de um arquivo TOML
+    links = []
     if links_input.endswith(".toml"):
-        print(f"\n[*] Lendo arquivo de mapeamento: {links_input}")
-        links = []
-        try:
-            if "tomllib" in sys.modules:
-                with open(links_input, "rb") as f:
-                    data = tomllib.load(f)
-                    links = data.get("mangas", {}).get("urls", [])
-            else:
-                with open(links_input, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.strip().startswith('"http'):
-                            links.append(line.split('"')[1])
-        except Exception as e:
-            print(f"[-] Erro ao ler TOML: {e}")
-            input("Pressione Enter para continuar...")
-            return
+        links = MangaManager.read_toml_links(links_input)
     else:
         links = [link.strip() for link in links_input.split(",") if link.strip()]
 
     json_files = set()
-
     scraper = SakuraScraper(headless=False)
 
     for link in links:
@@ -355,16 +210,9 @@ def download_complete_manga():
         try:
             manga_data = scraper.get_chapters(link)
             if manga_data and "chapters" in manga_data:
-                manga_title = manga_data.get("title", link.strip("/").split("/")[-1])
-                safe_name = manga_title.lower().replace(" ", "_").replace("-", "_")
-                safe_name = re.sub(r"[^a-z0-9_]", "", safe_name)
-
-                data_dir = "data"
-                os.makedirs(data_dir, exist_ok=True)
-                json_path = os.path.join(data_dir, f"{safe_name}.json")
-                with open(json_path, "w", encoding="utf-8") as f:
-                    json.dump(manga_data, f, ensure_ascii=False, indent=4)
-
+                json_path = MangaManager.save_manga_data(
+                    manga_data, manga_data["chapters"]
+                )
                 print(
                     f"[+] Lista salva em {json_path}! Encontrados {len(manga_data['chapters'])} capítulos."
                 )
@@ -374,8 +222,7 @@ def download_complete_manga():
         except Exception as e:
             print(f"[-] Erro inesperado ao processar {link}: {e}")
 
-    json_files.update(glob.glob("data/*.json", recursive=False))
-    # Ignora o state_file
+    json_files.update(glob.glob(f"{MangaManager.DATA_DIR}/*.json", recursive=False))
     json_files = {f for f in json_files if "state_file.json" not in f}
 
     if json_files:
@@ -391,103 +238,91 @@ def download_complete_manga():
                 print(f"\n[*] Processando fila gerada: {json_path}")
                 try:
                     with open(json_path, "r", encoding="utf-8") as f:
-                        dados = json.load(f)
+                        manga_data = json.load(f)
 
-                        manga_title = dados.get("title", "Desconhecido")
-                        chapters_dict = dados.get("chapters", {})
+                    manga_title = manga_data.get("title", "Desconhecido")
+                    chapters_dict = manga_data.get("chapters", {})
+                    scanlator = (
+                        list(chapters_dict.values())[0].get("scanlator", "")
+                        if chapters_dict
+                        else ""
+                    )
+                    manga_folder = MangaManager.format_manga_folder(
+                        manga_title, scanlator
+                    )
 
-                        scanlator = ""
-                        if chapters_dict:
-                            first_cap = list(chapters_dict.values())[0]
-                            scanlator = first_cap.get("scanlator", "")
+                    for cap_id, cap in reversed(list(chapters_dict.items())):
+                        url = cap.get("url")
+                        if url:
+                            if not url.startswith("http"):
+                                url = "https://sakuramangas.org" + url
 
-                        manga_folder = (
-                            f"{manga_title} - {scanlator}" if scanlator else manga_title
-                        )
-                        manga_folder = re.sub(r'[\\/:*?"<>|]', "", manga_folder)
+                            raw_name = cap.get("name", "Cap 00")
+                            chapter_folder = MangaManager.format_chapter_folder(
+                                raw_name
+                            )
+                            chapter_path = os.path.join(
+                                MangaManager.DOWNLOAD_DIR, manga_folder, chapter_folder
+                            )
 
-                        for cap_id, cap in reversed(list(chapters_dict.items())):
-                            url = cap.get("url")
-                            if url:
-                                if not url.startswith("http"):
-                                    url = "https://sakuramangas.org" + url
-
-                                raw_name = cap.get("name", "Cap 00")
-                                chapter_folder = re.sub(
-                                    r"Cap\.\s*([\d\.]+)",
-                                    lambda m: f"Cap {float(m.group(1)):06.2f}".replace(
-                                        ".00", ""
-                                    )
-                                    .replace(".", ",")
-                                    .zfill(3),
-                                    raw_name,
+                            if MangaManager.is_physically_downloaded(chapter_path):
+                                print(
+                                    f"  -> [PULO] Capítulo já existente no HD: {chapter_folder}"
                                 )
-                                chapter_folder = re.sub(
-                                    r"Cap\.\s*([\d\.]+)",
-                                    lambda m: f"Cap {m.group(1).zfill(3)}",
-                                    raw_name,
+                                cap["downloaded"] = True
+                            elif cap.get("downloaded"):
+                                print(
+                                    f"  -> [MEMÓRIA] {chapter_folder} sumiu do HD, JSON diz que baixou. Pulando..."
                                 )
-                                chapter_folder = re.sub(
-                                    r'[\\/:*?"<>|]', "", chapter_folder
+                            else:
+                                print(
+                                    f"  -> Baixando Inédito: {chapter_folder} na pasta {manga_folder}"
                                 )
-
-                                chapter_path = os.path.join(
-                                    "download", manga_folder, chapter_folder
-                                )
-
-                                # Verificação Bilateral Passiva (Opção 2 - Batch)
-                                is_physically_downloaded = False
-                                if os.path.exists(chapter_path):
-                                    if any(
-                                        f.startswith("pag_") and f.endswith(".jpg")
-                                        for f in os.listdir(chapter_path)
-                                    ):
-                                        is_physically_downloaded = True
-
-                                if is_physically_downloaded:
-                                    print(
-                                        f"  -> [PULO] Capítulo já existente no HD: {chapter_folder}"
-                                    )
+                                if scraper.download_chapter(
+                                    url,
+                                    manga_name=manga_folder,
+                                    chapter_name=chapter_folder,
+                                ):
                                     cap["downloaded"] = True
-                                else:
-                                    if cap.get("downloaded"):
-                                        # Usuário moveu para outro lugar para economizar espaço
-                                        print(
-                                            f"  -> [MEMÓRIA] {chapter_folder} sumiu do HD, mas JSON diz que já foi baixado. Presumindo movimentação. Pulando..."
-                                        )
-                                    else:
-                                        print(
-                                            f"  -> Baixando Inédito: {chapter_folder} na pasta {manga_folder}"
-                                        )
-                                        success = scraper.download_chapter(
-                                            url,
-                                            manga_name=manga_folder,
-                                            chapter_name=chapter_folder,
-                                        )
-                                        if success:
-                                            cap["downloaded"] = True
 
-                        # Calcula e atualiza o maior capítulo baixado no Batch
-                        highest_downloaded = 0.0
-                        for cap_id, cap in chapters_dict.items():
-                            if cap.get("downloaded", False):
-                                raw_name = cap.get("name", "Cap 00")
-                                match = re.search(r"Cap\.?\s*([\d\.]+)", raw_name)
-                                if match:
-                                    num = float(match.group(1))
-                                    if num > highest_downloaded:
-                                        highest_downloaded = num
-
-                        dados["latest_downloaded_chapter"] = highest_downloaded
-
-                        # Salva o estado atualizado no JSON ao final da fila
-                        with open(json_path, "w", encoding="utf-8") as f:
-                            json.dump(dados, f, ensure_ascii=False, indent=4)
+                    MangaManager.update_latest_downloaded(manga_data, json_path)
 
                 except Exception as e:
                     print(f"[-] Erro na fila: {e}")
 
     input("\nProcesso concluído. Pressione Enter para voltar ao menu...")
+
+
+def add_urls_interactively():
+    clear_screen()
+    print("=== Adicionar URLs em Lote ao mapping.toml ===")
+    print("Cole todas as URLs que deseja adicionar.")
+    print("Pode colar milhares de linhas de uma vez.")
+    print("Pressione Enter DUAS VEZES seguidas para finalizar.\n")
+
+    urls = []
+    while True:
+        line = input()
+        if not line.strip():
+            # Aguarda uma segunda linha em branco para sair (para colar blocos)
+            break
+
+        # Pode ser que o usuário cole urls separadas por espaço ou virgula na mesma linha
+        # Ou multiplas linhas de uma vez se o terminal suportar multiline paste
+        for piece in line.split():
+            if piece.startswith("http"):
+                urls.append(piece.strip('",[]'))
+
+    if urls:
+        print(f"\n[*] Processando {len(urls)} URLs...")
+        added = MangaManager.add_urls_to_toml(urls)
+        print(f"[+] {added} NOVAS URLs adicionadas ao mapping.toml com sucesso!")
+        if len(urls) > added:
+            print(f"[*] {len(urls) - added} URLs já existiam e foram ignoradas.")
+    else:
+        print("\nNenhuma URL válida encontrada.")
+
+    input("\nPressione Enter para voltar ao menu...")
 
 
 def main_menu():
@@ -497,7 +332,8 @@ def main_menu():
         print("Menu Principal:")
         print("1 - Baixar Capítulo(s) Específico(s)")
         print("2 - Baixar Mangá Completo")
-        print("3 - Sair")
+        print("3 - Adicionar URLs em Lote (mapping.toml)")
+        print("4 - Sair")
 
         choice = input("\nEscolha uma opção: ").strip()
 
@@ -506,8 +342,10 @@ def main_menu():
         elif choice == "2":
             download_complete_manga()
         elif choice == "3":
+            add_urls_interactively()
+        elif choice == "4":
             print("Saindo do Sakura Mangas Downloader...")
             break
         else:
-            print("Opção inválida. Por favor, escolha 1, 2 ou 3.")
+            print("Opção inválida. Por favor, escolha 1, 2, 3 ou 4.")
             input("Pressione Enter para continuar...")

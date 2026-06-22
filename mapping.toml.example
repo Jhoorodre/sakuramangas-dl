@@ -1,0 +1,6 @@
+[mangas]
+# Fila de obras para atualizar ou baixar completamente
+urls = [
+    "https://sakuramangas.org/obras/manga-de-exemplo-1",
+    "https://sakuramangas.org/obras/manga-de-exemplo-2"
+]
