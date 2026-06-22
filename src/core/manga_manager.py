@@ -141,7 +141,10 @@ class MangaManager:
 
     @staticmethod
     def is_physically_downloaded(chapter_path):
-        """Verifica se o capítulo já foi baixado fisicamente analisando os arquivos jpg."""
+        """Verifica se o capítulo já foi baixado fisicamente analisando os arquivos jpg ou arquivos .cbz."""
+        if os.path.exists(f"{chapter_path}.cbz"):
+            return True
+
         if os.path.exists(chapter_path):
             if any(
                 f.startswith("pag_") and f.endswith(".jpg")
@@ -176,11 +179,33 @@ class MangaManager:
                     "latest_downloaded_chapter", 0.0
                 )
 
-                novos = len(chapters_dict) - len(old_data["chapters"])
-                if novos > 0:
+                new_unique = len(
+                    set(c.get("number", 0) for c in chapters_dict.values())
+                )
+                old_unique = len(
+                    set(c.get("number", 0) for c in old_data["chapters"].values())
+                )
+                novos_unicos = new_unique - old_unique
+                novos_links = len(chapters_dict) - len(old_data["chapters"])
+
+                if novos_unicos > 0:
                     print(
-                        f"\n[HOT] O site possui {novos} capítulo(s) a mais do que o seu JSON antigo! A fila foi atualizada."
+                        f"\n[HOT] O site possui {novos_unicos} capítulo(s) NOVO(S) a mais do que o seu JSON antigo! A fila foi atualizada."
                     )
+                elif novos_links > 0:
+                    print(
+                        f"\n[HOT] O site adicionou {novos_links} nova(s) tradução(ões) alternativa(s) para capítulos existentes!"
+                    )
+
+        if "chapters" in manga_data:
+            # Ordena os capítulos de forma decrescente pelo número do capítulo
+            manga_data["chapters"] = dict(
+                sorted(
+                    manga_data["chapters"].items(),
+                    key=lambda item: float(item[1].get("number", 0)),
+                    reverse=True,
+                )
+            )
 
         with open(json_path_data, "w", encoding="utf-8") as f:
             json.dump(manga_data, f, ensure_ascii=False, indent=4)
@@ -199,5 +224,15 @@ class MangaManager:
                     highest = num
 
         manga_data["latest_downloaded_chapter"] = highest
+
+        if "chapters" in manga_data:
+            manga_data["chapters"] = dict(
+                sorted(
+                    manga_data["chapters"].items(),
+                    key=lambda item: float(item[1].get("number", 0)),
+                    reverse=True,
+                )
+            )
+
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(manga_data, f, ensure_ascii=False, indent=4)

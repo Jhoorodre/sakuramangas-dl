@@ -10,16 +10,16 @@ def main():
     )
     parser.add_argument("url", help="A URL completa do capítulo do Sakura Mangas")
     parser.add_argument(
-        "--headless",
+        "--no-headless",
         action="store_true",
-        help="Rodar em modo invisível (Pode falhar no Cloudflare)",
+        help="Rodar em modo visual sempre (Desativa o Headless dinâmico)",
     )
 
     args = parser.parse_args()
 
     # Inicia o motor
-    # Nota: Headless é falso por padrão para facilitar a passagem pelo Cloudflare
-    scraper = SakuraScraper(headless=args.headless)
+    # Nota: Headless é True por padrão. O sistema chaveia para visual sozinho se o Cloudflare bloquear.
+    scraper = SakuraScraper(headless=not args.no_headless)
 
     print("======================================")
     print("🌸 SAKURA MANGAS DL v2.0 🌸")

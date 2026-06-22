@@ -1,6 +1,4 @@
 import os
-import glob
-import json
 
 from src.core.scraper import SakuraScraper
 
@@ -21,7 +19,7 @@ def print_banner():
     print(banner)
 
 
-def download_chapters():
+def download_chapters(headless=True):
     clear_screen()
     print("=== Baixar Capítulos Específicos ===")
 
@@ -41,7 +39,7 @@ def download_chapters():
     if not escolha:
         return
 
-    scraper = SakuraScraper(headless=False)
+    scraper = SakuraScraper(headless=headless)
     links = []
 
     if escolha.isdigit() and 1 <= int(escolha) <= len(toml_links):
@@ -185,25 +183,157 @@ def download_chapters():
     input("\nProcesso concluído. Pressione Enter para voltar ao menu...")
 
 
-def download_complete_manga():
+def download_complete_manga(headless=True):
     clear_screen()
-    print("=== Baixar Mangá Completo ===")
-    print("Digite os links dos mangás separados por vírgula (,)")
-    print("Ou digite o nome de um arquivo TOML (ex: mapping.toml)")
-    print("\nDigite os links ou arquivo:")
+    print("=== Baixar Mangá Completo (Ponta-a-Ponta) ===")
 
-    links_input = input("> ").strip()
-    if not links_input:
+    toml_links = MangaManager.read_toml_links()
+    if toml_links:
+        print("Mangás cadastrados no mapping.toml:")
+        print("[0] TODOS OS MANGÁS (Sincronização em Massa)")
+        for i, url in enumerate(toml_links, 1):
+            name = url.strip("/").split("/")[-1].replace("-", " ").title()
+            print(f"[{i}] {name}")
+
+    print(
+        "\nDigite o número do mangá (ex: 1), '0' para todos, ou cole links separados por vírgula:"
+    )
+    escolha = input("> ").strip()
+    if not escolha:
         return
 
     links = []
-    if links_input.endswith(".toml"):
-        links = MangaManager.read_toml_links(links_input)
+    if escolha == "0" and toml_links:
+        links = toml_links
+    elif escolha.endswith(".toml"):
+        links = MangaManager.read_toml_links(escolha)
     else:
-        links = [link.strip() for link in links_input.split(",") if link.strip()]
+        # Processa cada item separado por vírgula
+        parts = [p.strip() for p in escolha.split(",") if p.strip()]
+        for part in parts:
+            if part.isdigit():
+                idx = int(part)
+                if 1 <= idx <= len(toml_links):
+                    link = toml_links[idx - 1]
+                    if link not in links:
+                        links.append(link)
+                else:
+                    print(f"[-] O número {idx} não existe na lista. Ignorado.")
+            else:
+                if part not in links:
+                    links.append(part)
 
-    json_files = set()
-    scraper = SakuraScraper(headless=False)
+    scraper = SakuraScraper(headless=headless)
+
+    print("\n🚀 Iniciando Sincronização Ponta-a-Ponta...")
+    for link in links:
+        print("\n==========================================")
+        print(f"[*] Processando Obra: {link}")
+        try:
+            manga_data = scraper.get_chapters(link)
+            if not manga_data or "chapters" not in manga_data:
+                print(f"[-] Falha ao obter dados para {link}.")
+                continue
+
+            json_path = MangaManager.save_manga_data(manga_data, manga_data["chapters"])
+            unique_chaps = len(
+                set(c.get("number", 0) for c in manga_data["chapters"].values())
+            )
+            print(
+                f"[+] Lista salva em {json_path}! Encontrados {unique_chaps} capítulos únicos."
+            )
+
+            # Baixar imediatamente após gerar o metadado
+            manga_title = manga_data.get("title", "Desconhecido")
+            chapters_dict = manga_data.get("chapters", {})
+            scanlator = (
+                list(chapters_dict.values())[0].get("scanlator", "")
+                if chapters_dict
+                else ""
+            )
+            manga_folder = MangaManager.format_manga_folder(manga_title, scanlator)
+
+            print(f"[*] Iniciando download dos capítulos de {manga_folder}...")
+
+            for cap_id, cap in reversed(list(chapters_dict.items())):
+                url = cap.get("url")
+                if url:
+                    if not url.startswith("http"):
+                        url = "https://sakuramangas.org" + url
+
+                    raw_name = cap.get("name", "Cap 00")
+                    chapter_folder = MangaManager.format_chapter_folder(raw_name)
+                    chapter_path = os.path.join(
+                        MangaManager.DOWNLOAD_DIR, manga_folder, chapter_folder
+                    )
+
+                    if MangaManager.is_physically_downloaded(chapter_path):
+                        print(
+                            f"  -> [PULO] Capítulo já existente no HD: {chapter_folder}"
+                        )
+                        cap["downloaded"] = True
+                    elif cap.get("downloaded"):
+                        print(
+                            f"  -> [MEMÓRIA] {chapter_folder} sumiu do HD, JSON diz que baixou. Pulando..."
+                        )
+                    else:
+                        print(
+                            f"  -> Baixando Inédito: {chapter_folder} na pasta {manga_folder}"
+                        )
+                        if scraper.download_chapter(
+                            url, manga_name=manga_folder, chapter_name=chapter_folder
+                        ):
+                            cap["downloaded"] = True
+
+            MangaManager.update_latest_downloaded(manga_data, json_path)
+            print(f"[+] Obra {manga_folder} finalizada com sucesso!")
+
+        except Exception as e:
+            print(f"[-] Erro inesperado ao processar {link}: {e}")
+
+    input("\nProcesso concluído. Pressione Enter para voltar ao menu...")
+
+
+def sync_metadata_only(headless=True):
+    clear_screen()
+    print("=== Sincronizar Apenas Metadados (Atualizar JSONs) ===")
+
+    toml_links = MangaManager.read_toml_links()
+    if toml_links:
+        print("Mangás cadastrados no mapping.toml:")
+        print("[0] TODOS OS MANGÁS (Sincronização em Massa)")
+        for i, url in enumerate(toml_links, 1):
+            name = url.strip("/").split("/")[-1].replace("-", " ").title()
+            print(f"[{i}] {name}")
+
+    print(
+        "\nDigite o número do mangá (ex: 1), '0' para todos, ou cole links separados por vírgula:"
+    )
+    escolha = input("> ").strip()
+    if not escolha:
+        return
+
+    links = []
+    if escolha == "0" and toml_links:
+        links = toml_links
+    elif escolha.endswith(".toml"):
+        links = MangaManager.read_toml_links(escolha)
+    else:
+        parts = [p.strip() for p in escolha.split(",") if p.strip()]
+        for part in parts:
+            if part.isdigit():
+                idx = int(part)
+                if 1 <= idx <= len(toml_links):
+                    link = toml_links[idx - 1]
+                    if link not in links:
+                        links.append(link)
+                else:
+                    print(f"[-] O número {idx} não existe na lista. Ignorado.")
+            else:
+                if part not in links:
+                    links.append(part)
+
+    scraper = SakuraScraper(headless=headless)
 
     for link in links:
         print(f"\n[*] Extraindo lista de capítulos para: {link}")
@@ -213,82 +343,16 @@ def download_complete_manga():
                 json_path = MangaManager.save_manga_data(
                     manga_data, manga_data["chapters"]
                 )
-                print(
-                    f"[+] Lista salva em {json_path}! Encontrados {len(manga_data['chapters'])} capítulos."
+                unique_chaps = len(
+                    set(c.get("number", 0) for c in manga_data["chapters"].values())
                 )
-                json_files.add(json_path)
+                print(
+                    f"[+] Lista salva em {json_path}! Encontrados {unique_chaps} capítulos ({len(manga_data['chapters'])} links com traduções)."
+                )
             else:
                 print(f"[-] Falha ao obter dados para {link}.")
         except Exception as e:
             print(f"[-] Erro inesperado ao processar {link}: {e}")
-
-    json_files.update(glob.glob(f"{MangaManager.DATA_DIR}/*.json", recursive=False))
-    json_files = {f for f in json_files if "state_file.json" not in f}
-
-    if json_files:
-        print("\nArquivos de metadados gerados com sucesso:")
-        for json_file in sorted(json_files):
-            print(f"- {json_file}")
-
-        print("\nDeseja baixar todos os capítulos agora? (S/N)")
-        choice = input("> ").strip().lower()
-
-        if choice == "s":
-            for json_path in sorted(json_files):
-                print(f"\n[*] Processando fila gerada: {json_path}")
-                try:
-                    with open(json_path, "r", encoding="utf-8") as f:
-                        manga_data = json.load(f)
-
-                    manga_title = manga_data.get("title", "Desconhecido")
-                    chapters_dict = manga_data.get("chapters", {})
-                    scanlator = (
-                        list(chapters_dict.values())[0].get("scanlator", "")
-                        if chapters_dict
-                        else ""
-                    )
-                    manga_folder = MangaManager.format_manga_folder(
-                        manga_title, scanlator
-                    )
-
-                    for cap_id, cap in reversed(list(chapters_dict.items())):
-                        url = cap.get("url")
-                        if url:
-                            if not url.startswith("http"):
-                                url = "https://sakuramangas.org" + url
-
-                            raw_name = cap.get("name", "Cap 00")
-                            chapter_folder = MangaManager.format_chapter_folder(
-                                raw_name
-                            )
-                            chapter_path = os.path.join(
-                                MangaManager.DOWNLOAD_DIR, manga_folder, chapter_folder
-                            )
-
-                            if MangaManager.is_physically_downloaded(chapter_path):
-                                print(
-                                    f"  -> [PULO] Capítulo já existente no HD: {chapter_folder}"
-                                )
-                                cap["downloaded"] = True
-                            elif cap.get("downloaded"):
-                                print(
-                                    f"  -> [MEMÓRIA] {chapter_folder} sumiu do HD, JSON diz que baixou. Pulando..."
-                                )
-                            else:
-                                print(
-                                    f"  -> Baixando Inédito: {chapter_folder} na pasta {manga_folder}"
-                                )
-                                if scraper.download_chapter(
-                                    url,
-                                    manga_name=manga_folder,
-                                    chapter_name=chapter_folder,
-                                ):
-                                    cap["downloaded"] = True
-
-                    MangaManager.update_latest_downloaded(manga_data, json_path)
-
-                except Exception as e:
-                    print(f"[-] Erro na fila: {e}")
 
     input("\nProcesso concluído. Pressione Enter para voltar ao menu...")
 
@@ -318,44 +382,38 @@ def add_urls_interactively():
                 urls.append(clean_url)
 
     if urls:
-        # Remove duplicatas dentro do próprio lote que o usuário colou agora
-        unique_urls = []
-        for u in urls:
-            if u not in unique_urls:
-                unique_urls.append(u)
-
-        print(f"\n[*] Processando {len(unique_urls)} URLs únicas do lote...")
-        added = MangaManager.add_urls_to_toml(unique_urls)
-        print(f"[+] {added} NOVAS URLs adicionadas ao mapping.toml com sucesso!")
-        if len(unique_urls) > added:
-            print(f"[*] {len(unique_urls) - added} URLs já existiam e foram ignoradas.")
+        count = MangaManager.add_urls_to_toml(urls)
+        print(f"\n[+] {count} novas URLs foram adicionadas ao mapping.toml!")
     else:
-        print("\nNenhuma URL válida encontrada.")
+        print("\n[-] Nenhuma URL válida foi fornecida.")
 
     input("\nPressione Enter para voltar ao menu...")
 
 
-def main_menu():
+def main_menu(headless=True):
     while True:
         clear_screen()
         print_banner()
         print("Menu Principal:")
         print("1 - Baixar Capítulo(s) Específico(s)")
-        print("2 - Baixar Mangá Completo")
-        print("3 - Adicionar URLs em Lote (mapping.toml)")
-        print("4 - Sair")
+        print("2 - Baixar Mangá Completo (Ponta-a-Ponta)")
+        print("3 - Sincronizar Apenas Metadados (Atualizar JSONs)")
+        print("4 - Adicionar URLs em Lote (mapping.toml)")
+        print("5 - Sair")
 
         choice = input("\nEscolha uma opção: ").strip()
 
         if choice == "1":
-            download_chapters()
+            download_chapters(headless=headless)
         elif choice == "2":
-            download_complete_manga()
+            download_complete_manga(headless=headless)
         elif choice == "3":
-            add_urls_interactively()
+            sync_metadata_only(headless=headless)
         elif choice == "4":
+            add_urls_interactively()
+        elif choice == "5":
             print("Saindo do Sakura Mangas Downloader...")
             break
         else:
-            print("Opção inválida. Por favor, escolha 1, 2, 3 ou 4.")
+            print("Opção inválida. Por favor, escolha 1, 2, 3, 4 ou 5.")
             input("Pressione Enter para continuar...")

@@ -44,8 +44,11 @@ class SakuraScraper:
             return parts[-2], parts[-1]
         return "desconhecido", "00"
 
-    def _launch_browser(self, p):
+    def _launch_browser(self, p, headless=None):
         """Lança um contexto persistente que salva Cache no disco, emulando um Chrome humano."""
+        if headless is None:
+            headless = self.headless
+
         data_dir = os.environ.get("DATA_DIR", "data")
         user_data_dir = os.path.join(data_dir, "browser_cache")
         os.makedirs(user_data_dir, exist_ok=True)
@@ -54,20 +57,78 @@ class SakuraScraper:
 
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
-            headless=self.headless,
+            headless=headless,
             args=args,
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         )
+
+        page = context.pages[0] if context.pages else context.new_page()
+
+        try:
+            from playwright_stealth import stealth_sync
+
+            stealth_sync(page)
+        except ImportError:
+            pass
 
         context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
 
-        # O launch_persistent já abre uma aba padrão. Vamos usá-la.
-        page = context.pages[0] if context.pages else context.new_page()
-
         # Bloqueador de Popups: Mata qualquer aba de propaganda que tentar abrir
         context.on("page", lambda new_page: new_page.close())
+
+        return context, page
+
+    def _navigate_with_cf_bypass(self, p, url, interceptor=None):
+        """Acessa a URL, verifica o Cloudflare e reinicia em modo visual se o Headless for bloqueado."""
+        current_headless = self.headless
+        context, page = self._launch_browser(p, headless=current_headless)
+
+        if interceptor:
+            page.route("**/*", interceptor.throttle_traffic)
+            page.on("response", interceptor.handle_response)
+
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:
+            logging.error(f"[PIPELINE] Erro ao carregar página: {e}")
+
+        cf_status = handle_cloudflare(
+            page, context, self.state_file, is_headless=current_headless
+        )
+
+        if cf_status == "NEEDS_HEADFUL":
+            logging.info("======================================")
+            logging.info("🛡️  SISTEMA DE DEFESA ATIVADO!")
+            logging.info("☁️  O Cloudflare nos barrou por estarmos 'invisíveis'.")
+            logging.info(
+                "👁️  Reabrindo o navegador com interface gráfica para passar pelo bloqueio..."
+            )
+            logging.info("======================================")
+            try:
+                context.close()
+            except Exception:
+                pass
+
+            # Reabre headful real
+            current_headless = False
+            context, page = self._launch_browser(p, headless=current_headless)
+            if interceptor:
+                page.route("**/*", interceptor.throttle_traffic)
+                page.on("response", interceptor.handle_response)
+
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            except Exception:
+                pass
+
+            handle_cloudflare(
+                page, context, self.state_file, is_headless=current_headless
+            )
+            logging.info(
+                "[PIPELINE] Salvando os cookies novos. A próxima tentativa poderá voltar a ser invisível!"
+            )
 
         return context, page
 
@@ -95,23 +156,18 @@ class SakuraScraper:
             )
             return True
 
-        logging.info(f"[PIPELINE] Preparando ambiente. Modo Headless: {self.headless}")
+        logging.info(
+            f"[PIPELINE] Preparando ambiente. Modo Headless Base: {self.headless}"
+        )
         logging.info(f"[PIPELINE] Pasta de destino: {output_dir}")
 
         with sync_playwright() as p:
-            context, page = self._launch_browser(p)
             interceptor = ImageInterceptor(output_dir)
-
-            page.route("**/*", interceptor.throttle_traffic)
-            page.on("response", interceptor.handle_response)
-
             logging.info("[PIPELINE] Acessando SakuraMangas...")
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            except Exception as e:
-                logging.error(f"[PIPELINE] Erro ao carregar página inicial: {e}")
 
-            handle_cloudflare(page, context, self.state_file)
+            context, page = self._navigate_with_cf_bypass(
+                p, url, interceptor=interceptor
+            )
 
             logging.info(
                 "[PIPELINE] Deixando a poeira baixar para as imagens iniciais carregarem em paz (10s)..."
@@ -268,23 +324,33 @@ class SakuraScraper:
                 logging.info(f"│ 📄 Total Mapeado: {total_mapped}")
                 logging.info(f"│ ✅ Recuperadas:   {total_downloaded} (100%)")
                 logging.info("└──────────────────────────────────────")
+
+                if os.environ.get("SAVE_AS_CBZ", "false").lower() == "true":
+                    import shutil
+
+                    try:
+                        logging.info(
+                            "[PIPELINE] Compactando imagens para formato CBZ..."
+                        )
+                        shutil.make_archive(output_dir, "zip", output_dir)
+                        os.rename(f"{output_dir}.zip", f"{output_dir}.cbz")
+                        shutil.rmtree(output_dir, ignore_errors=True)
+                        logging.info(
+                            f"[PIPELINE] Arquivo gerado com sucesso: {chapter_name}.cbz"
+                        )
+                    except Exception as e:
+                        logging.error(f"[PIPELINE] Erro ao criar CBZ: {e}")
+
                 return True
 
     def search_manga(self, query):
         """Pesquisa um mangá pelo nome e retorna uma lista de resultados {title, url}."""
         logging.info(f"[*] Pesquisando por: {query}")
         with sync_playwright() as p:
-            context, page = self._launch_browser(p)
+            search_url = f"https://sakuramangas.org/?s={query.replace(' ', '+')}"
+            context, page = self._navigate_with_cf_bypass(p, search_url)
 
             try:
-                search_url = f"https://sakuramangas.org/?s={query.replace(' ', '+')}"
-                try:
-                    page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
-                except Exception:
-                    pass
-
-                handle_cloudflare(page, context, self.state_file)
-
                 results = page.evaluate("""() => {
                     let items = [];
                     let links = document.querySelectorAll('a[href*="/obras/"]');
@@ -313,18 +379,9 @@ class SakuraScraper:
         logging.info(f"[*] Preparando extração de capítulos para: {url}")
 
         with sync_playwright() as p:
-            context, page = self._launch_browser(p)
+            context, page = self._navigate_with_cf_bypass(p, url)
 
             try:
-                logging.info("[*] Acessando a página...")
-                try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                except Exception as e:
-                    logging.error(f"[-] Erro ao carregar página: {e}")
-
-                # Lógica Anti-Cloudflare (Modularizado)
-                handle_cloudflare(page, context, self.state_file)
-
                 # Extração de Capítulos (Modularizado)
                 expand_chapters_list(page)
 
