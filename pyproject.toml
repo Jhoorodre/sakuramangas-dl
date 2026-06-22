@@ -4,14 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sakuramangas-dl"
-version = "1.0.0"
-description = "Um scraper avançado e blindado para SakuraMangas com bypass de Cloudflare e Playwright nativo"
+version = "2.0.0"
+description = "Extrator automatizado de mangás em Python para sakuramangas.org"
 readme = "README.md"
 requires-python = ">=3.8"
+authors = [
+  { name = "Etoshy", email = "rivansmilew@gmail.com" },
+]
 license = { text = "MIT" }
+urls = { Repository = "https://github.com/Jhoorodre/sakuramangas-dl" }
 dependencies = [
-    "playwright>=1.40.0"
+    "playwright>=1.40.0",
+    "tomli>=2.0.1; python_version < '3.11'"
 ]
 
 [project.scripts]
-sakura-dl = "src.core.cli:main_menu"
+sakura-dl = "src.main:main"
