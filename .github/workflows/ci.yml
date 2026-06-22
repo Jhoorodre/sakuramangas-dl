@@ -1,0 +1,23 @@
+name: CI (Fiscal de Código)
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  lint:
+    name: Verificação do Ruff
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fazer Checkout do Código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Executar Pre-commit (Ruff Lint & Format)
+        uses: pre-commit/action@v3.0.1
