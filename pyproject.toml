@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sakuramangas-dl"
+version = "1.0.0"
+description = "Um scraper avançado e blindado para SakuraMangas com bypass de Cloudflare e Playwright nativo"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dependencies = [
+    "playwright>=1.40.0"
+]
+
+[project.scripts]
+sakura-dl = "src.core.cli:main_menu"

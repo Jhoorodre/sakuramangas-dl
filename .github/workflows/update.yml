@@ -1,0 +1,135 @@
+name: Update Repository
+
+on:
+  schedule:
+    - cron: "55 9 * * *"
+    - cron: "55 21 * * *"
+
+  workflow_dispatch:
+    inputs:
+      start_from:
+        description: "Start from chapter:"
+        type: number
+      end_at:
+        description: "End at chapter:"
+        type: number
+      cooldown:
+        description: "Cooldown between requests (in seconds):"
+        required: true
+        default: 1
+        type: number
+      timeout:
+        description: "Consecutive unchanged chapters before exiting:"
+        default: 5
+        type: number
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: labosphere
+  cancel-in-progress: true
+
+jobs:
+  update:
+    name: Update
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ${{ github.repository }}
+        uses: actions/checkout@v4
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Set Up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Name Update Branch
+        shell: uv run --with hachitool python {0}
+        run: |
+          import uuid
+          
+          import hachitool
+          
+          hachitool.set_env(UPDATE_BRANCH=f"update/{uuid.uuid4()}")
+
+      - name: Create Update Branch
+        run: |
+          git branch -f ${{ env.UPDATE_BRANCH }}
+          git checkout ${{ env.UPDATE_BRANCH }}
+          git push -u origin ${{ env.UPDATE_BRANCH }}
+          git branch --set-upstream-to=origin/${{ env.UPDATE_BRANCH }}
+
+      - name: Install Dependencies
+        run: uv sync
+
+      - name: Get Labosphere Options
+        id: options
+        shell: uv run --with hachitool python {0}
+        run: |
+          import os
+          
+          import hachitool
+
+          start_from = os.getenv("START_FROM")
+          end_at = os.getenv("END_AT")
+          cooldown = os.getenv("COOLDOWN") or 1
+          timeout = os.getenv("TIMEOUT") or 5
+
+          options = []
+
+          if start_from:
+              options.append(f"--from {start_from}")
+
+          if end_at:
+              options.append(f"--to {end_at}")
+
+          if cooldown:
+              options.append(f"--cooldown {cooldown}")
+
+          if timeout:
+              options.append(f"--timeout {timeout}")
+          
+          hachitool.set_output(options=' '.join(options))
+        env:
+          START_FROM: ${{ inputs.start_from }}
+          END_AT: ${{ inputs.end_at }}
+          COOLDOWN: ${{ inputs.cooldown }}
+          TIMEOUT: ${{ inputs.timeout }}
+
+      - name: Run Labosphere
+        run: uv run labosphere start ${{ steps.options.outputs.options }}
+
+      - name: Exit if No Changes
+        run: |
+          if [[ -z $(git diff -- cubari.json) ]]; then
+            gh run cancel ${{ github.run_id }}
+            gh run watch ${{ github.run_id }} > /dev/null 2>&1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Commit Changes
+        run: |
+          git add .
+          git commit -m "Update cubari.json"
+          git push
+
+      - name: Open Pull Request
+        run: |
+          if [[ -n "${{ env.LABOSPHERE_FLAG_PR }}" ]]; then
+            gh pr create --title "Update repository" --body "More chapters updated than expected; review required."
+          else
+            gh pr create --title "Update repository" --body ""
+            gh pr merge --squash ${{ env.UPDATE_BRANCH }}
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Delete Update Branch
+        if: ${{ always() && env.LABOSPHERE_FLAG_PR != 1 }}
+        run: git push -d origin ${{ env.UPDATE_BRANCH }}

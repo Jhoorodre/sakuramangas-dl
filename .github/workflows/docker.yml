@@ -1,0 +1,56 @@
+name: Publish Docker Image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker.yml
+      - labosphere/
+      - pyproject.toml
+      - README.md
+      - LICENSE.md
+      - .python-version
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Set Up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Get Image Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/celsiusnarhwal/labosphere
+          tags:
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and Push Image
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+

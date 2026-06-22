@@ -1,129 +1,80 @@
 # **Sakura Mangás Downloader**  
 
 ## **📌 Visão Geral**  
-O **Sakura Mangás Downloader** é uma ferramenta Python para baixar mangás completos ou capítulos individuais do [sakuramangas.org](https://sakuramangas.org/).  
+O **Sakura Mangás Downloader** é uma ferramenta Python projetada para a extração automatizada de mangás completos ou capítulos individuais da plataforma [sakuramangas.org](https://sakuramangas.org/). O sistema opera de forma autônoma simulando interações de usuário para resolver desafios de segurança de rede e garantir a obtenção integral dos arquivos.
 
 **Autor:** Etoshy  
-**Repositório:** [github.com/etoshy/Sakura-Mangas-Downloader](https://github.com/etoshy/Sakura-Mangas-Downloader)  
+**Repositório:** [github.com/Jhoorodre/sakuramangas-dl](https://github.com/Jhoorodre/sakuramangas-dl)  
 
 ---
 
 ## **📂 Estrutura de Arquivos**  
+A arquitetura do projeto foi reformulada para maior modularidade e eficiência:
+
 ```
 Sakura-Mangas-Downloader/  
 │
-├── code/  
-│   ├── cap.py          # Baixa capítulos  
-│   └── manga.py        # Extrai mangás completos  
+├── main.py               # Ponto de entrada e menu principal da aplicação
+├── mapping.toml          # Arquivo de configuração de atalhos e mapeamento de obras
 │
-├── menu.py             # Menu interativo  
+├── src/  
+│   └── core/  
+│       ├── cli.py        # Módulo de interface interativa (CLI)
+│       ├── scraper.py    # Motor principal de intercepção de rede e download (Playwright)
+│       └── utils.py      # Funções utilitárias de navegação orgânica e renderização
 │
-└── mangas/             # Pasta de downloads  
-    ├── [Nome do Mangá]/  
-    │   ├── manga_info.json        # Metadados do mangá  
-    │   ├── manga_caps.html        # Lista de capítulos (HTML)  
-    │   ├── links_caps.json        # Links para download  
-    │   └── [Número do Capítulo]/  
-    │       ├── capitulo_info.json # Dados do capítulo  
-    │       ├── capitulo_pages.json # Links das páginas  
-    │       └── pages/  
-    │           ├── 001.jpg       # Páginas baixadas  
-    │           ├── 002.jpg  
-    │           └── ...  
+└── donwload/             # Diretório oficial de saída dos arquivos
+    └── [Nome do Mangá]/  
+        └── [Capítulo]/  
+            ├── pag_001.jpg
+            ├── pag_002.jpg  
+            └── ...  
 ```
 
 ---
 
-## **📜 Funcionamento dos Scripts**  
+## **📜 Funcionamento e Conceitos**  
 
-### **1. `menu.py` (Menu Principal)**  
-🔹 **Opções:**  
-- **1. Baixar Capítulo**  
-  - Aceita:  
-    - Links diretos (ex: `https://sakuramangas.org/ler/xxx`)  
-    - Arquivos `links_caps.json` (gerados pelo `manga.py`)  
-- **2. Baixar Mangá Completo**  
-  - Aceita links de obras (ex: `https://sakuramangas.org/obras/xxx`)  
-  - Gera estrutura com metadados + links para download futuro.  
-- **3. Sair**  
+### **1. Interface Unificada (`main.py`)**  
+Todo o fluxo de uso agora acontece através de um único menu interativo central.
+🔹 **Opções Disponíveis:**  
+- **1. Baixar Capítulo(s)**: Permite baixar capítulos selecionados (ex: `1, 2, 5-10`). O sistema aceita a seleção através do atalho configurado no `mapping.toml`, via link direto do mangá ou busca pelo nome.
+- **2. Baixar Mangá Completo**: Realiza a extração automatizada de todos os capítulos listados na página da obra selecionada.
+- **3. Sair**: Encerra a aplicação.
 
-🔹 **Fluxo Automático:**  
-Após baixar um mangá, o menu **oferece baixar os capítulos** usando os `links_caps.json` gerados.  
+### **2. O Motor de Extração (`src/core/scraper.py`)**  
+A extração de imagens não ocorre mais por parsing estático tradicional, mas sim por intercepção direta do tráfego de rede via Playwright.
+🔹 **Características:**
+- **Intercepção Dinâmica:** Ouve as respostas de rede do navegador e extrai os arquivos de imagem em tempo real, independentemente da forma como o site os carrega.
+- **Retomada de Download (Smart Resume):** Verifica a pasta de destino local. Se identificar páginas já baixadas e numeradas (`pag_XXX.jpg`), pula a etapa para evitar redundância de processamento.
+- **Mecanismos de Fallback:** Possui rotinas secundárias de resgate via blob e leitura nativa de memória de renderização caso blocos específicos de imagem não carreguem de primeira.
 
----
-
-### **2. `code/manga.py` (Download de Mangás Completos)**  
-🔹 **O que faz:**  
-- Extrai:  
-  - Título, autor, sinopse (`manga_info.json`)  
-  - Lista de capítulos (`links_caps.json`)  
-- **Não baixa as páginas diretamente** (só prepara os links).  
-
-🔹 **Como Usar:**  
-```bash
-python code/manga.py "https://sakuramangas.org/obras/nome-do-manga/"
-```
-🔹 **Saída:**  
-```
-mangas/  
-└── [Nome do Mangá]/  
-    ├── manga_info.json  
-    ├── links_caps.json  
-    └── ...  
-```
+### **3. Navegação Orgânica (`src/core/utils.py`)**  
+Para garantir o carregamento completo do DOM (Lazy Load) e o bypass das verificações automatizadas de tráfego, o bot navega simulando a cadência humana.
+🔹 **Características:**
+- Expande listas de capítulos ocultas dinamicamente ("Ver Mais").
+- Executa a rolagem controlada da página para desencadear as requisições de imagens sequencialmente, reduzindo a carga súbita (Rate Limiting).
 
 ---
 
-### **3. `code/cap.py` (Download de Capítulos)**  
-🔹 **O que faz:**  
-- Baixa capítulos **via:**  
-  - **Links diretos** (ex: `https://sakuramangas.org/ler/xxx`).  
-  - **Arquivos JSON** (`links_caps.json` ou `capitulo_pages.json`).  
-- Organiza em pastas numeradas com as páginas.  
+## **⚙️ Instalação e Execução**  
 
-🔹 **Estrutura Gerada:**  
-```
-mangas/Nome do Mangá/2/  
-├── capitulo_info.json  
-├── capitulo_pages.json  
-└── pages/  
-    ├── 001.jpg  
-    ├── 002.jpg  
-    └── ...  
-```
-
-🔹 **Modos de Uso:**  
-1. **Via link direto:**  
-```bash
-python code/cap.py "https://sakuramangas.org/ler/cap-xxx"
-```  
-2. **Via `links_caps.json` (após `manga.py`):**  
-```bash
-python code/cap.py "mangas/Nome do Mangá/links_caps.json"
-```  
-3. **Baixar um capítulo específico via `capitulo_pages.json`:**  
-```bash
-python code/cap.py "mangas/Nome do Mangá/2/capitulo_pages.json"
-```
+1. Instale as dependências necessárias listadas no repositório.
+2. Certifique-se de inicializar o motor de navegação do Playwright:
+   ```bash
+   playwright install chromium
+   ```
+3. Execute o programa:
+   ```bash
+   python main.py
+   ```
 
 ---
 
 ## **🔍 SEO & Otimização**   
 - "Baixar mangás Sakura completos"  
 - "Sakura Mangás Downloader tutorial"  
-- "Como baixar mangás de sakuramangas.org"  
-- "Ferramenta Python para mangás offline"  
+- "Como baixar mangás de sakuramangas.org offline"  
+- "Extrator automatizado de mangás em Python"  
 
----
-
-## **✅ Resumo das Funcionalidades**  
-✔ **Menu interativo** (facilita o uso).  
-✔ **Suporte a mangás completos + capítulos avulsos**.  
-✔ **Gera JSONs** para continuar downloads depois.  
-✔ **Estrutura organizada**:  
-   - `manga_info.json` (dados da obra).  
-   - `capitulo_info.json` (dados do capítulo).  
-   - `pages/` (imagens numeradas).  
-
-🔗 **GitHub:** [github.com/etoshy/Sakura-Mangas-Downloader](https://github.com/etoshy/Sakura-Mangas-Downloader)  
-
+🔗 **GitHub:** [github.com/Jhoorodre/sakuramangas-dl](https://github.com/Jhoorodre/sakuramangas-dl)  
