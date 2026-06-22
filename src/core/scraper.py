@@ -234,12 +234,17 @@ class SakuraScraper:
 
             interceptor.finalize_and_rename_images()
 
-            logging.info("======================================")
-            logging.info("🎯 DOWNLOAD CONCLUÍDO!")
-            logging.info(
-                f"🎯 Total de imagens roubadas: {len(interceptor.downloaded_files)}"
-            )
-            logging.info("======================================")
+            # Relatório Final Minimalista
+            total_mapped = len(interceptor.ordered_urls)
+            total_downloaded = len(interceptor.downloaded_files)
+            final_missing = [
+                u
+                for u in interceptor.ordered_urls
+                if u not in interceptor.downloaded_files
+            ]
+
+            logging.info("")
+            logging.info("┌──────────────────────────────────────")
 
             try:
                 context.storage_state(path=self.state_file)
@@ -247,7 +252,23 @@ class SakuraScraper:
             except Exception:
                 pass
             context.close()
-            return True
+
+            if len(final_missing) > 0:
+                logging.info("│ 🔴 RESULTADO: FALHA PARCIAL")
+                logging.info(f"│ 📄 Total Mapeado: {total_mapped}")
+                logging.info(f"│ ✅ Recuperadas:   {total_downloaded}")
+                logging.info(f"│ ❌ Perdidas:      {len(final_missing)}")
+                logging.info("└──────────────────────────────────────")
+                logging.error(
+                    "[!] O capítulo não será marcado como concluído devido a falhas."
+                )
+                return False
+            else:
+                logging.info("│ 🟢 RESULTADO: SUCESSO ABSOLUTO")
+                logging.info(f"│ 📄 Total Mapeado: {total_mapped}")
+                logging.info(f"│ ✅ Recuperadas:   {total_downloaded} (100%)")
+                logging.info("└──────────────────────────────────────")
+                return True
 
     def search_manga(self, query):
         """Pesquisa um mangá pelo nome e retorna uma lista de resultados {title, url}."""
