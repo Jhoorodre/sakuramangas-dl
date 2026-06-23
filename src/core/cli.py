@@ -76,11 +76,7 @@ def download_chapters(headless=True):
 
             manga_title = manga_data.get("title", "Desconhecido")
             chapters_dict = manga_data.get("chapters", {})
-            scanlator = (
-                list(chapters_dict.values())[0].get("scanlator", "")
-                if chapters_dict
-                else ""
-            )
+            scanlator = MangaManager.get_majority_scanlator(chapters_dict)
 
             manga_folder = MangaManager.format_manga_folder(manga_title, scanlator)
             manga_base_dir = os.path.join(MangaManager.DOWNLOAD_DIR, manga_folder)
@@ -106,7 +102,13 @@ def download_chapters(headless=True):
             specifics, ranges = MangaManager.parse_chapter_selection(selection)
             overwrite_all = False
 
+            primary_caps = MangaManager.get_primary_chapters(chapters_dict)
+
             for cap_id, cap in reversed(list(chapters_dict.items())):
+                if cap_id not in primary_caps:
+                    cap["downloaded"] = False
+                    continue
+
                 raw_name = cap.get("name", "Cap 00")
                 chap_num = MangaManager.get_chap_num_from_name(raw_name)
 
@@ -246,16 +248,25 @@ def download_complete_manga(headless=True):
             # Baixar imediatamente após gerar o metadado
             manga_title = manga_data.get("title", "Desconhecido")
             chapters_dict = manga_data.get("chapters", {})
-            scanlator = (
-                list(chapters_dict.values())[0].get("scanlator", "")
-                if chapters_dict
-                else ""
-            )
+            scanlator = MangaManager.get_majority_scanlator(chapters_dict)
             manga_folder = MangaManager.format_manga_folder(manga_title, scanlator)
+            manga_base_dir = os.path.join(MangaManager.DOWNLOAD_DIR, manga_folder)
+
+            if manga_data.get("cover"):
+                cover_path = os.path.join(manga_base_dir, "cover.jpg")
+                if not os.path.exists(cover_path):
+                    os.makedirs(manga_base_dir, exist_ok=True)
+                    scraper.download_cover(manga_data["cover"], cover_path)
 
             print(f"[*] Iniciando download dos capítulos de {manga_folder}...")
 
+            primary_caps = MangaManager.get_primary_chapters(chapters_dict)
+
             for cap_id, cap in reversed(list(chapters_dict.items())):
+                if cap_id not in primary_caps:
+                    cap["downloaded"] = False
+                    continue
+
                 url = cap.get("url")
                 if url:
                     if not url.startswith("http"):
@@ -343,6 +354,27 @@ def sync_metadata_only(headless=True):
                 json_path = MangaManager.save_manga_data(
                     manga_data, manga_data["chapters"]
                 )
+
+                # Sincroniza o status 'downloaded' verificando o Disco Rígido
+                manga_title = manga_data.get("title", "Desconhecido")
+                scanlator = MangaManager.get_majority_scanlator(manga_data["chapters"])
+                manga_folder = MangaManager.format_manga_folder(manga_title, scanlator)
+
+                has_updates = False
+                for cap_id, cap in manga_data["chapters"].items():
+                    if not cap.get("downloaded"):
+                        raw_name = cap.get("name", "Cap 00")
+                        chapter_folder = MangaManager.format_chapter_folder(raw_name)
+                        chapter_path = os.path.join(
+                            MangaManager.DOWNLOAD_DIR, manga_folder, chapter_folder
+                        )
+                        if MangaManager.is_physically_downloaded(chapter_path):
+                            cap["downloaded"] = True
+                            has_updates = True
+
+                if has_updates:
+                    MangaManager.update_latest_downloaded(manga_data, json_path)
+
                 unique_chaps = len(
                     set(c.get("number", 0) for c in manga_data["chapters"].values())
                 )

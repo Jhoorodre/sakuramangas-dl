@@ -77,24 +77,68 @@ class MangaManager:
         return re.sub(r"[^a-z0-9_]", "", safe_name)
 
     @staticmethod
+    def get_majority_scanlator(chapters_dict):
+        """Calcula qual scanlator mais aparece nos capítulos."""
+        from collections import Counter
+
+        scans = [
+            c.get("scanlator", "") for c in chapters_dict.values() if c.get("scanlator")
+        ]
+        if not scans:
+            return ""
+        return Counter(scans).most_common(1)[0][0]
+
+    @staticmethod
+    def get_primary_chapters(chapters_dict):
+        """Retorna um set com os IDs dos capítulos primários (mais recentes/majoritários)."""
+        majority_scanlator = MangaManager.get_majority_scanlator(chapters_dict)
+        grouped_chapters = {}
+        for cap_id, cap in chapters_dict.items():
+            num = cap.get("number")
+            if num not in grouped_chapters:
+                grouped_chapters[num] = []
+            grouped_chapters[num].append(cap_id)
+
+        primary_caps = set()
+        for num, cap_ids in grouped_chapters.items():
+            sorted_cap_ids = sorted(
+                cap_ids,
+                key=lambda cid: (
+                    chapters_dict[cid].get("uploadDate", 0),
+                    1
+                    if chapters_dict[cid].get("scanlator") == majority_scanlator
+                    else 0,
+                ),
+                reverse=True,
+            )
+            primary_caps.add(sorted_cap_ids[0])
+        return primary_caps
+
+    @staticmethod
     def format_manga_folder(manga_title, scanlator=""):
-        """Formata o nome da pasta do mangá."""
+        """Formata o nome da pasta do mangá (usa a Scan majoritária se existir)."""
         manga_folder = f"{manga_title} - {scanlator}" if scanlator else manga_title
         return re.sub(r'[\\/:*?"<>|]', "", manga_folder)
 
     @staticmethod
     def format_chapter_folder(raw_name):
-        """Formata o nome da pasta do capítulo (ex: Cap 024.00)."""
+        """Formata o nome da pasta do capítulo (ex: Cap 024 [Eremita Scan] ou Cap 9.5)."""
+
+        def format_num(m):
+            val = m.group(1)
+            f_val = float(val)
+            if f_val.is_integer():
+                return f"Cap {int(f_val):03d}"
+            else:
+                # Mantém 3 unidades também nos capítulos quebrados (ex: 9.5 vira 009.5)
+                str_val = f"{f_val:g}"
+                parts = str_val.split(".")
+                parts[0] = parts[0].zfill(3)
+                return f"Cap {'.'.join(parts)}"
+
         chapter_folder = re.sub(
             r"Cap\.\s*([\d\.]+)",
-            lambda m: f"Cap {float(m.group(1)):06.2f}".replace(".00", "")
-            .replace(".", ",")
-            .zfill(3),
-            raw_name,
-        )
-        chapter_folder = re.sub(
-            r"Cap\.\s*([\d\.]+)",
-            lambda m: f"Cap {m.group(1).zfill(3)}",
+            format_num,
             raw_name,
         )
         return re.sub(r'[\\/:*?"<>|]', "", chapter_folder)
@@ -196,6 +240,12 @@ class MangaManager:
                     print(
                         f"\n[HOT] O site adicionou {novos_links} nova(s) tradução(ões) alternativa(s) para capítulos existentes!"
                     )
+
+        primary_caps = MangaManager.get_primary_chapters(chapters_dict)
+
+        for cap_id, cap in chapters_dict.items():
+            if cap_id not in primary_caps:
+                cap["downloaded"] = False
 
         if "chapters" in manga_data:
             # Ordena os capítulos de forma decrescente pelo número do capítulo
