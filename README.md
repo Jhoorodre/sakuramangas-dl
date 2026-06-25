@@ -81,7 +81,8 @@ Aplica técnicas avançadas de engenharia social reversa em bots para evadir sis
    ```
 4. Inicie o sistema:
    ```bash
-   python main.py
+   python main.py                  # modo headless (padrão)
+   python main.py --no-headless    # abre o navegador visivelmente
    ```
 
 ---
@@ -93,18 +94,13 @@ O alvo emprega proteções (ex: Cloudflare Turnstile) que ativamente bloqueiam c
 - Na ocorrência de uma validação severa, o motor invoca o navegador com renderização gráfica ativa (`Headful`), supera a validação de segurança via interações orgânicas e consolida as assinaturas (cookies e tokens de validação) no armazenamento local.
 
 **Ambientes Sem Interface Gráfica (VPS / Servidores Headless):**
-Para implantações automatizadas contínuas em distribuições Linux não-GUI, a execução gráfica do Playwright exige um Display Server ativo. A recomendação técnica padrão é o uso do `X Virtual Framebuffer` (Xvfb).
+Para implantações em Linux não-GUI, o Playwright exige um Display Server ativo. Use o `X Virtual Framebuffer` (Xvfb):
 
-Instalação do Xvfb (Debian/Ubuntu):
 ```bash
 sudo apt install xvfb
-```
-
-Invocação do módulo no ambiente vitualizado:
-```bash
 xvfb-run python main.py --no-headless
 ```
-*(Esse método simula um monitor em hardware na camada X11. O navegador é ativado graficamente com renderização completa validando o bloqueio antibot, porém oculto para o plano de fundo do sistema operacional.)*
+*(Simula um monitor na camada X11: o navegador roda com renderização completa para validar o bloqueio antibot, mas permanece oculto para o SO.)*
 
 ---
 

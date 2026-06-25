@@ -25,6 +25,11 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.vscode
+
+# AI
+CLAUDE.md
+NOTA.txt
 
 # PyInstaller
 #   Usually these files are written by a python script from a template
@@ -70,10 +75,13 @@ instance/
 
 # Browser automation and testing
 .selenium
+.playwright-mcp
 
 # Mantém as pastas, mas ignora todo o conteúdo delas
 data/*
 !data/.gitkeep
+addon/*
+!addon/.gitkeep
 
 download/*
 !download/.gitkeep
