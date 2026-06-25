@@ -139,139 +139,25 @@ def activate_scroll_mode(page):
 
 
 def expand_chapters_list(page):
-    """Navega na página clicando em 'Ver Mais' durante a descida até os comentários de forma fluida e orgânica."""
+    """Expande a lista de capítulos clicando em 'Ver Mais' via JS (sem popup de anúncio)."""
     try:
         page.wait_for_selector(".chapter-list", timeout=60000)
-        logging.info("[*] Expandindo lista de capítulos de forma orgânica...")
+        logging.info("[*] Expandindo lista de capítulos...")
 
-        # Pausa inicial aleatória de 2 a 6 segundos (admirando a página)
-        page.wait_for_timeout(random.randint(2000, 6000))
-
-        # 1. Jornada de descida mecânica e ultra-suave (Alta frequência com Inércia)
-        logging.info(
-            "  -> [*] Descendo a tela mecanicamente de forma caótica e orgânica..."
-        )
-
-        hit_comments = False
-        frame_counter = 0
-        momentum = 0
-
-        # Simulando um "Event Loop" de alta frequência usando apenas hardware simulado
-        for _ in range(800):  # Máximo de 800 "frames" de segurança
-            frame_counter += 1
-
-            # --- MOTOR DE INÉRCIA HUMANA ---
-            # Um humano não rola constantemente. Ele dá um "impulso" (flick) na rodinha e deixa desacelerar.
-            if momentum <= 0 and random.random() < 0.15:
-                # Novo impulso forte na rodinha!
-                momentum = random.randint(30, 90)
-
-            if momentum > 0:
-                # Rola com a força do impulso atual + pequena variação
-                speed = momentum + random.randint(-5, 10)
-                page.mouse.wheel(0, speed)
-                # O atrito natural do dedo desacelera o impulso rápido
-                momentum -= random.randint(3, 12)
-                page.wait_for_timeout(random.randint(12, 20))
-            else:
-                # Sem embalo: rola de levinho ou não faz nada (micro-pausas de leitura)
-                if random.random() < 0.3:
-                    page.mouse.wheel(0, random.randint(5, 25))
-                page.wait_for_timeout(random.randint(20, 50))
-
-            # --- PAUSAS ERRÁTICAS ---
-            # A cada aprox 50-100 frames, o humano para para ler a tela ou mexer o mouse à toa
-            if frame_counter % random.randint(60, 120) == 0:
-                logging.debug("  -> [*] Micro-pausa para leitura/descanso...")
-                page.wait_for_timeout(random.randint(400, 1500))
-                # 50% de chance de vagar o mouse na tela enquanto lê
-                if random.random() < 0.5:
-                    page.mouse.move(
-                        random.randint(100, 800),
-                        random.randint(150, 600),
-                        steps=random.randint(10, 25),
-                    )
-
-            # --- ERROS HUMANOS ---
-            if frame_counter % random.randint(20, 40) == 0 and random.random() < 0.2:
-                # Puxa pra cima sem querer (Over-scroll)
-                page.mouse.wheel(0, random.randint(-60, -20))
-                page.wait_for_timeout(random.randint(100, 300))
-
-            # --- CHECAGEM DE BOTÕES (Apenas durante o fim do impulso para não travar o framerate) ---
-            if momentum <= 0 and frame_counter % 5 == 0:
-                # Olha se o botão de "Ver Mais" apareceu flutuando na tela
-                btn = page.query_selector("#ver-mais")
-                if btn and btn.is_visible():
-                    # Move o mouse acompanhando a descida pra fazer o clique
-                    page.mouse.move(
-                        random.randint(200, 600),
-                        random.randint(200, 500),
-                        steps=random.randint(5, 12),
-                    )
-                    try:
-                        # Clique humano hesitante (delay variado no mousedown)
-                        btn.click(
-                            force=True, timeout=2000, delay=random.randint(40, 150)
-                        )
-                        logging.info(
-                            "  -> [*] Clicou em 'Ver Mais' no embalo da descida!"
-                        )
-
-                        # Pausa orgânica de alívio esperando a página renderizar
-                        page.wait_for_timeout(random.randint(800, 2000))
-                    except Exception:
-                        pass
-
-                # A cada parada de impulso avaliamos se chegamos no final verdadeiro (comentários)
-                if frame_counter % 15 == 0:
-                    form_comment = page.query_selector(
-                        "#form-comentar, .form-comentario"
-                    )
-                    if form_comment and form_comment.is_visible():
-                        # Confirma se ainda tem botão sobrando pra expandir
-                        btn_left = page.query_selector("#ver-mais")
-                        if not btn_left or not btn_left.is_visible():
-                            logging.info(
-                                "  -> [*] Atingiu a seção de comentários fisicamente."
-                            )
-                            hit_comments = True
-                            break
-
-        if hit_comments:
-            # Freiada mecânica suave no fim, como se estivesse ajustando a visão
-            for _ in range(random.randint(3, 7)):
-                page.mouse.wheel(0, random.randint(-15, 25))
-                page.wait_for_timeout(random.randint(40, 100))
-
-        # 2. Comportamento pesado de leitura entre os comentários e o rodapé
-        logging.info("  -> [*] Simulando leitura dos comentários (Pausas erráticas)...")
-        for _ in range(random.randint(3, 6)):
-            # Move o mouse acompanhando o texto imaginário
-            page.mouse.move(
-                random.randint(100, 800),
-                random.randint(300, 700),
-                steps=random.randint(10, 30),
-            )
-
-            # Pausa longa (Lendo o comentário)
-            page.wait_for_timeout(random.randint(2500, 5000))
-
-            # Scroll imperfeito curtinho pra cima ou pra baixo enquanto lê
-            page.mouse.wheel(0, random.randint(-150, 300))
-
-        # 3. Desliza até o rodapé para finalizar a presença na página
-        try:
-            page.evaluate(
-                "window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});"
-            )
-            page.wait_for_timeout(random.randint(1500, 3000))
-        except Exception:
-            pass
+        for _ in range(10):
+            clicked = page.evaluate("""() => {
+                const btn = document.getElementById('ver-mais');
+                if (btn && btn.offsetParent !== null) { btn.click(); return true; }
+                return false;
+            }""")
+            if not clicked:
+                break
+            page.wait_for_timeout(2500)
+            logging.info("  -> [*] Clicou em 'Ver Mais'. Aguardando capítulos...")
 
         return True
     except Exception as e:
-        logging.error(f"[-] Erro na navegação da obra: {e}")
+        logging.error(f"[-] Erro na expansão da lista: {e}")
         return False
 
 
@@ -432,6 +318,10 @@ JS_EXTRACT_MANGA = """() => {
             name: fullName,
             url: chUrl.replace("https://sakuramangas.org", "")
         };
+    }
+    const maxVol = Math.max(0, ...Object.values(chaptersObj).map(c => c.volume));
+    for (const id of Object.keys(chaptersObj)) {
+        if (chaptersObj[id].volume === 0) chaptersObj[id].volume = maxVol + 1;
     }
     return { details: mangaDetails, chapters: chaptersObj };
 }"""

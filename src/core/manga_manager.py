@@ -1,6 +1,7 @@
 import os
 import json
 import re
+from collections import Counter
 
 try:
     import tomllib
@@ -58,12 +59,6 @@ class MangaManager:
                     if line.strip() != "]":
                         f.write(line)
 
-                # Garante que a linha anterior tem uma vírgula (se havia algum link)
-                if len(lines) > 2 and not lines[-2].strip().endswith(","):
-                    # Hack simples para adicionar a vírgula na linha de cima seria mais complexo em append bruto.
-                    # Mas no TOML, a última vírgula no array é opcional/tolerada.
-                    pass
-
                 for u in new_urls:
                     f.write(f'    "{u}",\n')
                 f.write("]\n")
@@ -79,8 +74,6 @@ class MangaManager:
     @staticmethod
     def get_majority_scanlator(chapters_dict):
         """Calcula qual scanlator mais aparece nos capítulos."""
-        from collections import Counter
-
         scans = [
             c.get("scanlator", "") for c in chapters_dict.values() if c.get("scanlator")
         ]
@@ -189,7 +182,7 @@ class MangaManager:
         if os.path.exists(f"{chapter_path}.cbz"):
             return True
 
-        if os.path.exists(chapter_path):
+        if os.path.isdir(chapter_path):
             if any(
                 f.startswith("pag_") and f.endswith(".jpg")
                 for f in os.listdir(chapter_path)
@@ -215,9 +208,10 @@ class MangaManager:
             if "chapters" in old_data:
                 for cid, cdata in chapters_dict.items():
                     if cid in old_data["chapters"]:
-                        cdata["downloaded"] = old_data["chapters"][cid].get(
-                            "downloaded", False
-                        )
+                        old_cap = old_data["chapters"][cid]
+                        cdata["downloaded"] = old_cap.get("downloaded", False)
+                        if "total_pages" in old_cap:
+                            cdata["total_pages"] = old_cap["total_pages"]
 
                 manga_data["latest_downloaded_chapter"] = old_data.get(
                     "latest_downloaded_chapter", 0.0

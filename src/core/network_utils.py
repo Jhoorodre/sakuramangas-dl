@@ -4,17 +4,13 @@ from src.core.utils import is_valid_image
 
 
 class ImageInterceptor:
-    def __init__(self, output_dir):
+    def __init__(self, output_dir, skip_existing=False):
         self.output_dir = output_dir
         self.ordered_urls = []
         self.downloaded_files = {}
         self.drm_headers = {}
-
-    def throttle_traffic(self, route):
-        try:
-            route.continue_()
-        except Exception:
-            pass
+        self.skip_existing = skip_existing
+        self.retry_after = 0
 
     def handle_response(self, response):
         if "/imagens/" in response.url and response.url.endswith(".jpg"):
@@ -39,20 +35,23 @@ class ImageInterceptor:
             try:
                 body = response.body()
                 if not is_valid_image(body):
+                    if response.status == 429:
+                        try:
+                            self.retry_after = max(
+                                self.retry_after,
+                                int(response.headers.get("retry-after", "0")),
+                            )
+                        except ValueError:
+                            pass
                     logging.warning(
                         f"  -> [!] Imagem {temp_filename} interceptada como HTML/Vazia. Passando para Pós-Processamento..."
                     )
                     return
 
-                if is_valid_image(body):
-                    with open(temp_filepath, "wb") as f:
-                        f.write(body)
-                    self.downloaded_files[response.url] = temp_filepath
-                    logging.info(f"  -> [+] Imagem baixada: {temp_filename}")
-                else:
-                    logging.error(
-                        f"  -> [-] Imagem {temp_filename} corrompida pela CDN."
-                    )
+                with open(temp_filepath, "wb") as f:
+                    f.write(body)
+                self.downloaded_files[response.url] = temp_filepath
+                logging.info(f"  -> [+] Imagem baixada: {temp_filename}")
             except Exception as e:
                 logging.error(f"  -> [-] Falha ao salvar {temp_filename}: {e}")
 
@@ -61,14 +60,19 @@ class ImageInterceptor:
         import json
         import base64
 
-        faltantes = [u for u in self.ordered_urls if u not in self.downloaded_files]
+        faltantes = self.get_missing_urls()
         if not faltantes:
             return
 
+        wait_ms = max(1500, self.retry_after * 1000)
+        if self.retry_after > 0:
+            logging.warning(
+                f"  -> [429] Rate limit detectado. Aguardando {self.retry_after}s antes do resgate..."
+            )
         logging.warning(
             f"  -> [!] {len(faltantes)} imagens perdidas detectadas. Iniciando resgate via JS Blob..."
         )
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(wait_ms)
 
         headers_json = json.dumps(self.drm_headers) if self.drm_headers else "{}"
 
@@ -123,9 +127,36 @@ class ImageInterceptor:
             "[PIPELINE] Formatando e numerando as imagens no disco (pag_001.jpg)..."
         )
         for index, url in enumerate(self.ordered_urls):
+            new_filename = f"pag_{index + 1:03d}.jpg"
+            new_path = os.path.join(self.output_dir, new_filename)
+            if self.skip_existing and os.path.exists(new_path):
+                if url in self.downloaded_files:
+                    try:
+                        os.remove(self.downloaded_files[url])
+                    except Exception:
+                        pass
+                continue
             if url in self.downloaded_files:
                 old_path = self.downloaded_files[url]
-                new_filename = f"pag_{index + 1:03d}.jpg"
-                new_path = os.path.join(self.output_dir, new_filename)
                 if os.path.exists(old_path):
                     os.rename(old_path, new_path)
+
+    def get_missing_urls(self):
+        """Retorna URLs ausentes tanto no download da sessão quanto no disco (modo recuperação)."""
+        missing = []
+        for index, url in enumerate(self.ordered_urls):
+            if url not in self.downloaded_files:
+                target = os.path.join(self.output_dir, f"pag_{index + 1:03d}.jpg")
+                if not os.path.exists(target):
+                    missing.append(url)
+        return missing
+
+    def count_all_on_disk(self):
+        """Conta pag_*.jpg presentes no disco após a finalização."""
+        return len(
+            [
+                f
+                for f in os.listdir(self.output_dir)
+                if f.startswith("pag_") and f.endswith(".jpg")
+            ]
+        )

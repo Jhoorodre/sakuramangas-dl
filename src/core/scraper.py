@@ -2,6 +2,8 @@ import os
 import json
 import logging
 import random
+import shutil
+from urllib.parse import quote_plus
 from playwright.sync_api import sync_playwright
 from src.core.utils import (
     handle_cloudflare,
@@ -9,13 +11,6 @@ from src.core.utils import (
     expand_chapters_list,
     JS_EXTRACT_MANGA,
     format_state_file,
-)
-
-# Configurando o log para salvar no pipeline.log além de imprimir na tela
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(message)s",
-    handlers=[logging.FileHandler("pipeline.log"), logging.StreamHandler()],
 )
 
 
@@ -44,6 +39,15 @@ class SakuraScraper:
             return parts[-2], parts[-1]
         return "desconhecido", "00"
 
+    _VIEWPORTS = [
+        {"width": 1366, "height": 768},
+        {"width": 1920, "height": 1080},
+        {"width": 1440, "height": 900},
+        {"width": 1536, "height": 864},
+        {"width": 1280, "height": 720},
+        {"width": 1600, "height": 900},
+    ]
+
     def _launch_browser(self, p, headless=None):
         """Lança um contexto persistente que salva Cache no disco, emulando um Chrome humano."""
         if headless is None:
@@ -53,13 +57,23 @@ class SakuraScraper:
         user_data_dir = os.path.join(data_dir, "browser_cache")
         os.makedirs(user_data_dir, exist_ok=True)
 
-        args = ["--disable-blink-features=AutomationControlled"]
+        chrome_ver = str(random.randint(120, 131))
+        viewport = random.choice(self._VIEWPORTS)
+        ua = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_ver}.0.0.0 Safari/537.36"
+
+        args = [
+            "--disable-blink-features=AutomationControlled",
+            f"--window-size={viewport['width']},{viewport['height']}",
+        ]
 
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             headless=headless,
             args=args,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            user_agent=ua,
+            viewport=viewport,
+            locale="pt-BR",
+            timezone_id="America/Sao_Paulo",
         )
 
         page = context.pages[0] if context.pages else context.new_page()
@@ -86,7 +100,6 @@ class SakuraScraper:
         context, page = self._launch_browser(p, headless=current_headless)
 
         if interceptor:
-            page.route("**/*", interceptor.throttle_traffic)
             page.on("response", interceptor.handle_response)
 
         try:
@@ -115,7 +128,6 @@ class SakuraScraper:
             current_headless = False
             context, page = self._launch_browser(p, headless=current_headless)
             if interceptor:
-                page.route("**/*", interceptor.throttle_traffic)
                 page.on("response", interceptor.handle_response)
 
             try:
@@ -129,11 +141,24 @@ class SakuraScraper:
             logging.info(
                 "[PIPELINE] Salvando os cookies novos. A próxima tentativa poderá voltar a ser invisível!"
             )
+            # Cooldown pós-bypass: evita acionar dois bypasses headful em sequência rápida,
+            # que é o padrão que dispara ban de IP no Cloudflare.
+            cooldown = random.randint(20000, 35000)
+            logging.info(
+                f"[PIPELINE] Cooldown anti-ban: aguardando {cooldown // 1000}s antes de continuar..."
+            )
+            page.wait_for_timeout(cooldown)
 
         return context, page
 
     def download_chapter(
-        self, url, manga_name=None, chapter_name=None, output_base_dir="download"
+        self,
+        url,
+        manga_name=None,
+        chapter_name=None,
+        output_base_dir="download",
+        expected_pages=None,
+        on_total_detected=None,
     ):
         from src.core.network_utils import ImageInterceptor
 
@@ -150,11 +175,26 @@ class SakuraScraper:
             for f in os.listdir(output_dir)
             if f.startswith("pag_") and f.endswith(".jpg")
         ]
-        if len(arquivos_prontos) > 0:
-            logging.info(
-                f"[PIPELINE] PULO INTELIGENTE: Capítulo já está 100% baixado ({len(arquivos_prontos)} páginas). Ignorando: {chapter_name}"
-            )
-            return True
+        local_count = len(arquivos_prontos)
+        skip_existing = False
+
+        if local_count > 0:
+            if not expected_pages or local_count == expected_pages:
+                logging.info(
+                    f"[PIPELINE] PULO INTELIGENTE: {local_count} páginas verificadas. Ignorando: {chapter_name}"
+                )
+                return local_count
+            elif local_count > expected_pages:
+                logging.info(
+                    f"[PIPELINE] REBUILD: {local_count} págs locais > {expected_pages} esperadas. Limpando pasta..."
+                )
+                shutil.rmtree(output_dir)
+                os.makedirs(output_dir, exist_ok=True)
+            else:
+                logging.info(
+                    f"[PIPELINE] RECUPERAÇÃO: {local_count}/{expected_pages} págs. Preservando existentes e baixando as faltantes..."
+                )
+                skip_existing = True
 
         logging.info(
             f"[PIPELINE] Preparando ambiente. Modo Headless Base: {self.headless}"
@@ -162,19 +202,37 @@ class SakuraScraper:
         logging.info(f"[PIPELINE] Pasta de destino: {output_dir}")
 
         with sync_playwright() as p:
-            interceptor = ImageInterceptor(output_dir)
+            interceptor = ImageInterceptor(output_dir, skip_existing=skip_existing)
             logging.info("[PIPELINE] Acessando SakuraMangas...")
 
             context, page = self._navigate_with_cf_bypass(
                 p, url, interceptor=interceptor
             )
 
-            logging.info(
-                "[PIPELINE] Deixando a poeira baixar para as imagens iniciais carregarem em paz (10s)..."
-            )
-            page.wait_for_timeout(10000)
+            logging.info("[PIPELINE] Aguardando primeiras imagens carregarem...")
+            for _ in range(100):
+                page.wait_for_timeout(100)
+                if interceptor.ordered_urls:
+                    break
+            page.wait_for_timeout(1000)
 
             activate_scroll_mode(page)
+
+            if expected_pages is None:
+                try:
+                    counter_text = page.locator("#scroll-page-counter").text_content(
+                        timeout=5000
+                    )
+                    dom_total = int(counter_text.split("/")[-1].strip())
+                    if dom_total > 0:
+                        expected_pages = dom_total
+                        logging.info(
+                            f"[PIPELINE] Total detectado via DOM: {expected_pages} páginas"
+                        )
+                        if on_total_detected:
+                            on_total_detected(expected_pages)
+                except Exception:
+                    pass
 
             logging.info(
                 "[PIPELINE] Acionando Scroll Brutal e Next Page para provocar Lazy Load..."
@@ -182,12 +240,32 @@ class SakuraScraper:
             timeout = 60
             last_len = -1
             stable_count = 0
+            forced_continuations = 0
 
             while timeout > 0:
                 current_len = len(interceptor.downloaded_files)
 
-                page.mouse.wheel(0, random.randint(800, 1500))
-                page.wait_for_timeout(random.randint(800, 1800))
+                if expected_pages and current_len >= expected_pages:
+                    logging.info(
+                        f"[PIPELINE] Todas as {expected_pages} imagens capturadas! Encerrando scroll."
+                    )
+                    break
+
+                # Distribuição humana de scroll: maioria lendo (curto), às vezes pulando (longo)
+                r = random.random()
+                if r < 0.60:
+                    scroll_dist = random.randint(350, 850)  # ritmo de leitura
+                elif r < 0.90:
+                    scroll_dist = random.randint(850, 1600)  # folhear rápido
+                else:
+                    scroll_dist = random.randint(1600, 2600)  # pulo grande
+                page.mouse.wheel(0, scroll_dist)
+
+                # Pausa bimodal: olhada rápida vs lendo a página com calma
+                if random.random() < 0.30:
+                    page.wait_for_timeout(random.randint(400, 900))
+                else:
+                    page.wait_for_timeout(random.randint(1000, 2500))
 
                 if random.random() < 0.10:
                     logging.info(
@@ -202,13 +280,14 @@ class SakuraScraper:
                     page.mouse.wheel(0, random.randint(-600, -200))
                     page.wait_for_timeout(random.randint(600, 1400))
 
-                if random.random() < 0.25:
+                # Mouse move restrito à coluna de leitura central (não voa para cantos)
+                if random.random() < 0.12:
                     page.mouse.move(
-                        random.randint(50, 1000),
-                        random.randint(50, 800),
-                        steps=random.randint(8, 25),
+                        random.randint(300, 750),
+                        random.randint(200, 600),
+                        steps=random.randint(5, 15),
                     )
-                    page.wait_for_timeout(random.randint(100, 400))
+                    page.wait_for_timeout(random.randint(100, 300))
 
                 is_bottom = page.evaluate("""() => {
                     const footer = document.querySelector('.footer-text-col');
@@ -225,6 +304,19 @@ class SakuraScraper:
                         max_wait = 3 if is_bottom else 15
 
                         if stable_count >= max_wait:
+                            if (
+                                expected_pages
+                                and len(interceptor.ordered_urls) < expected_pages
+                                and forced_continuations < 8
+                            ):
+                                forced_continuations += 1
+                                logging.info(
+                                    f"[PIPELINE] {len(interceptor.ordered_urls)}/{expected_pages} URLs. Forçando scroll agressivo ({forced_continuations}/8)..."
+                                )
+                                page.mouse.wheel(0, random.randint(3000, 6000))
+                                page.wait_for_timeout(random.randint(2000, 4000))
+                                stable_count = 0
+                                continue
                             logging.info(
                                 f"[PIPELINE] Rodapé atingido / Sem novas imagens. Total de páginas: {current_len}"
                             )
@@ -239,44 +331,64 @@ class SakuraScraper:
                         pass
 
                 timeout -= 1
-                if timeout % 10 == 0:
+                if (
+                    timeout == 0
+                    and expected_pages
+                    and len(interceptor.ordered_urls) < expected_pages
+                    and forced_continuations < 8
+                ):
+                    forced_continuations += 1
+                    timeout = 15
+                    logging.info(
+                        f"[PIPELINE] Timeout com {len(interceptor.ordered_urls)}/{expected_pages} URLs. Estendendo scroll ({forced_continuations}/8)..."
+                    )
+                    page.mouse.wheel(0, random.randint(3000, 6000))
+                    page.wait_for_timeout(random.randint(2000, 4000))
+                if timeout % 10 == 0 and timeout > 0:
                     logging.info(f"[PIPELINE] Coletadas até agora: {current_len}")
 
             # Resgate Passivo via JS Fetch Blob
             interceptor.rescue_missing_images_via_js(page)
 
-            # Plano C: Reload (F5) Extremo caso ainda faltem imagens
-            faltantes = [
-                u
-                for u in interceptor.ordered_urls
-                if u not in interceptor.downloaded_files
-            ]
-            if len(faltantes) > 0:
+            # Plano C: Reload (F5) Extremo — dispara se há URLs faltando OU lazy-load incompleto
+            faltantes = interceptor.get_missing_urls()
+            needs_planoc = bool(faltantes) or (
+                expected_pages and len(interceptor.ordered_urls) < expected_pages
+            )
+            if needs_planoc:
+                motivo = (
+                    f"{len(faltantes)} faltantes"
+                    if faltantes
+                    else f"lazy-load incompleto ({len(interceptor.ordered_urls)}/{expected_pages})"
+                )
                 logging.warning(
-                    f"\n[PIPELINE] {len(faltantes)} imagens resistiram ao resgate. Acionando PLANO C: Reload (F5) Extremo!"
+                    f"\n[PIPELINE] {motivo}. Acionando PLANO C: Reload (F5) Extremo!"
                 )
                 try:
-                    page.reload(wait_until="networkidle", timeout=60000)
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
                     logging.info(
-                        "[PIPELINE] F5 Concluído. Deixando a poeira baixar (10s)..."
+                        "[PIPELINE] F5 Concluído. Deixando a poeira baixar (30s) para rate limit expirar..."
                     )
-                    page.wait_for_timeout(10000)
+                    page.wait_for_timeout(30000)
 
                     activate_scroll_mode(page)
 
-                    logging.info("[PIPELINE] Fazendo uma varredura final na página...")
-                    for _ in range(random.randint(4, 7)):
-                        page.mouse.wheel(0, random.randint(1200, 1800))
-                        page.wait_for_timeout(random.randint(1200, 2000))
+                    logging.info(
+                        "[PIPELINE] Fazendo varredura completa da página após F5..."
+                    )
+                    for _ in range(50):
+                        page.mouse.wheel(0, random.randint(1800, 2800))
+                        page.wait_for_timeout(random.randint(600, 1200))
+                        is_at_bottom = page.evaluate(
+                            "() => window.scrollY + window.innerHeight >= document.body.scrollHeight - 500"
+                        )
+                        if is_at_bottom:
+                            page.wait_for_timeout(random.randint(4000, 7000))
+                            break
 
-                    page.mouse.wheel(0, random.randint(8000, 12000))
-                    page.wait_for_timeout(random.randint(4000, 6000))
+                    interceptor.rescue_missing_images_via_js(page)
 
-                    faltantes_final = [
-                        u
-                        for u in interceptor.ordered_urls
-                        if u not in interceptor.downloaded_files
-                    ]
+                    faltantes_final = interceptor.get_missing_urls()
                     if len(faltantes_final) > 0:
                         logging.error(
                             f"[PIPELINE] Fim da linha. {len(faltantes_final)} imagens não puderam ser salvas."
@@ -293,11 +405,7 @@ class SakuraScraper:
             # Relatório Final Minimalista
             total_mapped = len(interceptor.ordered_urls)
             total_downloaded = len(interceptor.downloaded_files)
-            final_missing = [
-                u
-                for u in interceptor.ordered_urls
-                if u not in interceptor.downloaded_files
-            ]
+            final_missing = interceptor.get_missing_urls()
 
             logging.info("")
             logging.info("┌──────────────────────────────────────")
@@ -318,16 +426,21 @@ class SakuraScraper:
                 logging.error(
                     "[!] O capítulo não será marcado como concluído devido a falhas."
                 )
-                return False
+                return 0
             else:
+                total_on_disk = interceptor.count_all_on_disk()
+                if expected_pages and total_on_disk < expected_pages:
+                    logging.error(
+                        f"│ 🔴 RESULTADO: INCOMPLETO — {total_on_disk}/{expected_pages} páginas no disco. Reagendando."
+                    )
+                    logging.info("└──────────────────────────────────────")
+                    return 0
                 logging.info("│ 🟢 RESULTADO: SUCESSO ABSOLUTO")
                 logging.info(f"│ 📄 Total Mapeado: {total_mapped}")
-                logging.info(f"│ ✅ Recuperadas:   {total_downloaded} (100%)")
+                logging.info(f"│ ✅ Total no Disco: {total_on_disk} (100%)")
                 logging.info("└──────────────────────────────────────")
 
                 if os.environ.get("SAVE_AS_CBZ", "false").lower() == "true":
-                    import shutil
-
                     try:
                         logging.info(
                             "[PIPELINE] Compactando imagens para formato CBZ..."
@@ -341,13 +454,13 @@ class SakuraScraper:
                     except Exception as e:
                         logging.error(f"[PIPELINE] Erro ao criar CBZ: {e}")
 
-                return True
+                return total_on_disk
 
     def search_manga(self, query):
         """Pesquisa um mangá pelo nome e retorna uma lista de resultados {title, url}."""
         logging.info(f"[*] Pesquisando por: {query}")
         with sync_playwright() as p:
-            search_url = f"https://sakuramangas.org/?s={query.replace(' ', '+')}"
+            search_url = f"https://sakuramangas.org/?s={quote_plus(query)}"
             context, page = self._navigate_with_cf_bypass(p, search_url)
 
             try:
@@ -408,8 +521,6 @@ class SakuraScraper:
 
     def download_cover(self, url, output_path):
         """Baixa a capa usando o Playwright para aproveitar os cookies do Cloudflare."""
-        from playwright.sync_api import sync_playwright
-
         with sync_playwright() as p:
             context, page = self._launch_browser(p)
             try:

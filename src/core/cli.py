@@ -1,8 +1,9 @@
 import os
+import time
+import random
+import shutil
 
 from src.core.scraper import SakuraScraper
-
-
 from src.core.manga_manager import MangaManager
 
 
@@ -80,14 +81,12 @@ def download_chapters(headless=True):
 
             manga_folder = MangaManager.format_manga_folder(manga_title, scanlator)
             manga_base_dir = os.path.join(MangaManager.DOWNLOAD_DIR, manga_folder)
-            data_dir = MangaManager.DATA_DIR
-            os.makedirs(data_dir, exist_ok=True)
-
             json_path_data = MangaManager.save_manga_data(manga_data, chapters_dict)
 
             if manga_data.get("cover"):
                 cover_path = os.path.join(manga_base_dir, "cover.jpg")
                 if not os.path.exists(cover_path):
+                    os.makedirs(manga_base_dir, exist_ok=True)
                     scraper.download_cover(manga_data["cover"], cover_path)
 
             print(f"\n[+] Obra: {manga_title} ({len(chapters_dict)} capítulos)")
@@ -114,6 +113,8 @@ def download_chapters(headless=True):
 
                 if MangaManager.is_chapter_selected(chap_num, specifics, ranges):
                     url = cap.get("url")
+                    if not url:
+                        continue
                     if not url.startswith("http"):
                         url = "https://sakuramangas.org" + url
 
@@ -147,8 +148,6 @@ def download_chapters(headless=True):
                             cap["downloaded"] = True
                             do_download = False
                         else:
-                            import shutil
-
                             shutil.rmtree(chapter_path, ignore_errors=True)
                             print("  -> Apagando versão antiga...")
                     else:
@@ -172,10 +171,41 @@ def download_chapters(headless=True):
                         print(
                             f"  -> Baixando: {chapter_folder} na pasta {manga_folder}"
                         )
-                        if scraper.download_chapter(
-                            url, manga_name=manga_folder, chapter_name=chapter_folder
+
+                        def _save_total(
+                            total, _cap=cap, _data=manga_data, _path=json_path_data
                         ):
+                            _cap["total_pages"] = total
+                            MangaManager.update_latest_downloaded(_data, _path)
+
+                        result = scraper.download_chapter(
+                            url,
+                            manga_name=manga_folder,
+                            chapter_name=chapter_folder,
+                            expected_pages=cap.get("total_pages"),
+                            on_total_detected=_save_total,
+                        )
+                        if result:
                             cap["downloaded"] = True
+                            cap["total_pages"] = result
+                            cap.pop("pages_on_disk", None)
+                            MangaManager.update_latest_downloaded(
+                                manga_data, json_path_data
+                            )
+                            time.sleep(random.uniform(5, 12))
+                        else:
+                            cap["pages_on_disk"] = (
+                                sum(
+                                    1
+                                    for f in os.listdir(chapter_path)
+                                    if f.startswith("pag_") and f.endswith(".jpg")
+                                )
+                                if os.path.isdir(chapter_path)
+                                else 0
+                            )
+                            MangaManager.update_latest_downloaded(
+                                manga_data, json_path_data
+                            )
 
             MangaManager.update_latest_downloaded(manga_data, json_path_data)
 
@@ -278,23 +308,100 @@ def download_complete_manga(headless=True):
                         MangaManager.DOWNLOAD_DIR, manga_folder, chapter_folder
                     )
 
-                    if MangaManager.is_physically_downloaded(chapter_path):
+                    phys_ok = MangaManager.is_physically_downloaded(chapter_path)
+                    json_ok = cap.get("downloaded", False)
+
+                    if json_ok and phys_ok:
                         print(
                             f"  -> [PULO] Capítulo já existente no HD: {chapter_folder}"
                         )
-                        cap["downloaded"] = True
-                    elif cap.get("downloaded"):
+                    elif json_ok and not phys_ok:
                         print(
                             f"  -> [MEMÓRIA] {chapter_folder} sumiu do HD, JSON diz que baixou. Pulando..."
                         )
                     else:
-                        print(
-                            f"  -> Baixando Inédito: {chapter_folder} na pasta {manga_folder}"
-                        )
-                        if scraper.download_chapter(
-                            url, manga_name=manga_folder, chapter_name=chapter_folder
+                        if phys_ok and not json_ok:
+                            if os.path.exists(f"{chapter_path}.cbz"):
+                                cap["downloaded"] = True
+                                MangaManager.update_latest_downloaded(
+                                    manga_data, json_path
+                                )
+                                print(
+                                    f"  -> [VALIDADO] {chapter_folder}: CBZ encontrado."
+                                )
+                                continue
+                            local_count = (
+                                len(
+                                    [
+                                        f
+                                        for f in os.listdir(chapter_path)
+                                        if f.startswith("pag_") and f.endswith(".jpg")
+                                    ]
+                                )
+                                if os.path.isdir(chapter_path)
+                                else 0
+                            )
+                            expected = cap.get("total_pages")
+
+                            if not expected:
+                                # Sem referência do site — não dá pra validar, pula sem tocar nos arquivos
+                                print(
+                                    f"  -> [SEM REF] {chapter_folder}: {local_count} págs locais, total do site desconhecido. Aguardando rebuild manual."
+                                )
+                                continue
+                            elif local_count == expected:
+                                cap["downloaded"] = True
+                                MangaManager.update_latest_downloaded(
+                                    manga_data, json_path
+                                )
+                                print(
+                                    f"  -> [VALIDADO] {chapter_folder}: {local_count}/{expected} págs. Match perfeito."
+                                )
+                                continue
+                            elif local_count > expected:
+                                shutil.rmtree(chapter_path, ignore_errors=True)
+                                print(
+                                    f"  -> [REBUILD] {chapter_folder}: {local_count} págs > {expected} esperadas. Reconstruindo..."
+                                )
+                            else:
+                                print(
+                                    f"  -> [RECUPERAÇÃO] {chapter_folder}: {local_count}/{expected} págs. Baixando as faltantes..."
+                                )
+                        else:
+                            print(
+                                f"  -> Baixando Inédito: {chapter_folder} na pasta {manga_folder}"
+                            )
+
+                        def _save_total(
+                            total, _cap=cap, _data=manga_data, _path=json_path
                         ):
+                            _cap["total_pages"] = total
+                            MangaManager.update_latest_downloaded(_data, _path)
+
+                        result = scraper.download_chapter(
+                            url,
+                            manga_name=manga_folder,
+                            chapter_name=chapter_folder,
+                            expected_pages=cap.get("total_pages"),
+                            on_total_detected=_save_total,
+                        )
+                        if result:
                             cap["downloaded"] = True
+                            cap["total_pages"] = result
+                            cap.pop("pages_on_disk", None)
+                            MangaManager.update_latest_downloaded(manga_data, json_path)
+                            time.sleep(random.uniform(5, 12))
+                        else:
+                            cap["pages_on_disk"] = (
+                                sum(
+                                    1
+                                    for f in os.listdir(chapter_path)
+                                    if f.startswith("pag_") and f.endswith(".jpg")
+                                )
+                                if os.path.isdir(chapter_path)
+                                else 0
+                            )
+                            MangaManager.update_latest_downloaded(manga_data, json_path)
 
             MangaManager.update_latest_downloaded(manga_data, json_path)
             print(f"[+] Obra {manga_folder} finalizada com sucesso!")
@@ -369,8 +476,25 @@ def sync_metadata_only(headless=True):
                             MangaManager.DOWNLOAD_DIR, manga_folder, chapter_folder
                         )
                         if MangaManager.is_physically_downloaded(chapter_path):
-                            cap["downloaded"] = True
-                            has_updates = True
+                            local_count = (
+                                len(
+                                    [
+                                        f
+                                        for f in os.listdir(chapter_path)
+                                        if f.startswith("pag_") and f.endswith(".jpg")
+                                    ]
+                                )
+                                if os.path.isdir(chapter_path)
+                                else 0
+                            )
+                            expected = cap.get("total_pages")
+                            if (
+                                not expected
+                                or local_count == expected
+                                or os.path.exists(f"{chapter_path}.cbz")
+                            ):
+                                cap["downloaded"] = True
+                                has_updates = True
 
                 if has_updates:
                     MangaManager.update_latest_downloaded(manga_data, json_path)
