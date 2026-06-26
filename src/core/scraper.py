@@ -273,7 +273,8 @@ class SakuraScraper:
                     )
                     page.wait_for_timeout(random.randint(4000, 8000))
 
-                if random.random() < 0.15:
+                # ponytail: back-scroll desativado durante recovery — windowed renderers removem DOM nodes ao subir
+                if random.random() < 0.15 and forced_continuations == 0:
                     logging.info(
                         "  -> [STEALTH] Rolou muito rápido! Subindo a tela para reler..."
                     )
@@ -314,6 +315,9 @@ class SakuraScraper:
                                     f"[PIPELINE] {len(interceptor.ordered_urls)}/{expected_pages} URLs. Forçando scroll agressivo ({forced_continuations}/8)..."
                                 )
                                 page.mouse.wheel(0, random.randint(3000, 6000))
+                                page.evaluate(
+                                    "window.scrollTo(0, document.body.scrollHeight)"
+                                )
                                 page.wait_for_timeout(random.randint(2000, 4000))
                                 stable_count = 0
                                 continue
@@ -343,62 +347,72 @@ class SakuraScraper:
                         f"[PIPELINE] Timeout com {len(interceptor.ordered_urls)}/{expected_pages} URLs. Estendendo scroll ({forced_continuations}/8)..."
                     )
                     page.mouse.wheel(0, random.randint(3000, 6000))
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     page.wait_for_timeout(random.randint(2000, 4000))
+                    stable_count = 0
                 if timeout % 10 == 0 and timeout > 0:
                     logging.info(f"[PIPELINE] Coletadas até agora: {current_len}")
 
             # Resgate Passivo via JS Fetch Blob
             interceptor.rescue_missing_images_via_js(page)
 
-            # Plano C: Reload (F5) Extremo — dispara se há URLs faltando OU lazy-load incompleto
-            faltantes = interceptor.get_missing_urls()
-            needs_planoc = bool(faltantes) or (
-                expected_pages and len(interceptor.ordered_urls) < expected_pages
-            )
-            if needs_planoc:
+            # Plano C: múltiplos reloads — o site entrega lazy-load em lotes, cada F5 desbloqueia o próximo
+            # ponytail: 5 reloads cobre capítulos de até ~600 págs em lotes de ~22; aumentar se necessário
+            for reload_num in range(1, 6):
+                faltantes = interceptor.get_missing_urls()
+                needs_reload = bool(faltantes) or (
+                    expected_pages and len(interceptor.ordered_urls) < expected_pages
+                )
+                if not needs_reload:
+                    break
                 motivo = (
                     f"{len(faltantes)} faltantes"
                     if faltantes
                     else f"lazy-load incompleto ({len(interceptor.ordered_urls)}/{expected_pages})"
                 )
                 logging.warning(
-                    f"\n[PIPELINE] {motivo}. Acionando PLANO C: Reload (F5) Extremo!"
+                    f"\n[PIPELINE] {motivo}. Acionando PLANO C: Reload {reload_num}/5..."
                 )
                 try:
                     page.reload(wait_until="domcontentloaded", timeout=60000)
+                    wait_secs = 30 if reload_num == 1 else 15
                     logging.info(
-                        "[PIPELINE] F5 Concluído. Deixando a poeira baixar (30s) para rate limit expirar..."
+                        f"[PIPELINE] F5 #{reload_num} concluído. Aguardando {wait_secs}s..."
                     )
-                    page.wait_for_timeout(30000)
+                    page.wait_for_timeout(wait_secs * 1000)
 
                     activate_scroll_mode(page)
 
                     logging.info(
                         "[PIPELINE] Fazendo varredura completa da página após F5..."
                     )
-                    for _ in range(50):
+                    for _ in range(120):
                         page.mouse.wheel(0, random.randint(1800, 2800))
-                        page.wait_for_timeout(random.randint(600, 1200))
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        page.wait_for_timeout(random.randint(800, 1500))
+                        if (
+                            expected_pages
+                            and len(interceptor.ordered_urls) >= expected_pages
+                        ):
+                            break
                         is_at_bottom = page.evaluate(
                             "() => window.scrollY + window.innerHeight >= document.body.scrollHeight - 500"
                         )
                         if is_at_bottom:
-                            page.wait_for_timeout(random.randint(4000, 7000))
-                            break
+                            page.wait_for_timeout(2000)
 
                     interceptor.rescue_missing_images_via_js(page)
-
-                    faltantes_final = interceptor.get_missing_urls()
-                    if len(faltantes_final) > 0:
-                        logging.error(
-                            f"[PIPELINE] Fim da linha. {len(faltantes_final)} imagens não puderam ser salvas."
-                        )
-                    else:
-                        logging.info(
-                            "[PIPELINE] F5 Extremo foi um sucesso! Todas as imagens recuperadas."
-                        )
+                    logging.info(
+                        f"[PIPELINE] Reload #{reload_num}: {len(interceptor.ordered_urls)}/{expected_pages or '?'} URLs encontradas."
+                    )
                 except Exception as e:
-                    logging.error(f"[PIPELINE] Erro catastrófico no F5: {e}")
+                    logging.error(f"[PIPELINE] Erro no reload #{reload_num}: {e}")
+
+            faltantes_final = interceptor.get_missing_urls()
+            if faltantes_final:
+                logging.error(
+                    f"[PIPELINE] Fim da linha. {len(faltantes_final)} imagens não puderam ser salvas."
+                )
 
             interceptor.finalize_and_rename_images()
 
