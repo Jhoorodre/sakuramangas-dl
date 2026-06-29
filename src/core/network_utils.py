@@ -83,7 +83,13 @@ class ImageInterceptor:
         logging.warning(
             f"  -> [!] {len(faltantes)} imagens perdidas detectadas. Iniciando resgate via JS Blob..."
         )
-        page.wait_for_timeout(wait_ms)
+        try:
+            page.wait_for_timeout(wait_ms)
+        except Exception:
+            logging.warning(
+                "  -> [!] Sessão encerrada antes do resgate. Pulando JS Blob."
+            )
+            return
 
         headers_json = json.dumps(self.drm_headers) if self.drm_headers else "{}"
 

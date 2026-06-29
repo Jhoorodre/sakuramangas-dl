@@ -378,13 +378,32 @@ def download_complete_manga(headless=True):
                             _cap["total_pages"] = total
                             MangaManager.update_latest_downloaded(_data, _path)
 
-                        result = scraper.download_chapter(
-                            url,
-                            manga_name=manga_folder,
-                            chapter_name=chapter_folder,
-                            expected_pages=cap.get("total_pages"),
-                            on_total_detected=_save_total,
-                        )
+                        try:
+                            _max_retries = int(os.environ.get("DOWNLOAD_RETRIES", "5"))
+                        except (ValueError, TypeError):
+                            _max_retries = 5
+                        result = 0
+                        for _retry in range(_max_retries):
+                            try:
+                                result = scraper.download_chapter(
+                                    url,
+                                    manga_name=manga_folder,
+                                    chapter_name=chapter_folder,
+                                    expected_pages=cap.get("total_pages"),
+                                    on_total_detected=_save_total,
+                                )
+                            except Exception as _dl_err:
+                                print(
+                                    f"    -> [ERRO] Exceção no download (tentativa {_retry + 1}): {_dl_err}"
+                                )
+                                result = 0
+                            if result:
+                                break
+                            if _retry < _max_retries - 1:
+                                print(
+                                    f"    -> [RETRY {_retry + 1}/{_max_retries}] Capítulo incompleto. Retentando..."
+                                )
+
                         if result:
                             cap["downloaded"] = True
                             cap["total_pages"] = result

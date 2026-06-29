@@ -348,29 +348,54 @@ class SakuraScraper:
             )
 
             logging.info("[PIPELINE] Aguardando primeiras imagens carregarem...")
-            for _ in range(100):
-                page.wait_for_timeout(100)
-                if interceptor.ordered_urls:
-                    break
-            page.wait_for_timeout(1000)
+            try:
+                for _ in range(100):
+                    page.wait_for_timeout(100)
+                    if interceptor.ordered_urls:
+                        break
+                page.wait_for_timeout(1000)
+            except Exception as _e:
+                _msg = str(_e).lower()
+                if any(
+                    k in _msg for k in ("closed", "target", "disconnect", "session")
+                ):
+                    logging.warning(
+                        f"[PIPELINE] Sessão encerrada durante espera inicial: {_e}"
+                    )
+                    return 0
+                raise
 
             activate_scroll_mode(page)
 
-            if expected_pages is None:
-                try:
-                    counter_text = page.locator("#scroll-page-counter").text_content(
-                        timeout=5000
+            if not expected_pages:
+                for _attempt in range(10):
+                    try:
+                        counter_text = page.locator(
+                            "#scroll-page-counter"
+                        ).text_content(timeout=3000)
+                        dom_total = int(counter_text.split("/")[-1].strip())
+                        if dom_total > 0:
+                            expected_pages = dom_total
+                            logging.info(
+                                f"[PIPELINE] Total detectado via DOM: {expected_pages} páginas"
+                            )
+                            if on_total_detected:
+                                on_total_detected(expected_pages)
+                            break
+                    except Exception:
+                        pass
+                    if _attempt < 9:
+                        page.wait_for_timeout(1000)
+
+                if expected_pages is None:
+                    logging.error(
+                        "[PIPELINE] Não foi possível ler #scroll-page-counter. Abortando capítulo."
                     )
-                    dom_total = int(counter_text.split("/")[-1].strip())
-                    if dom_total > 0:
-                        expected_pages = dom_total
-                        logging.info(
-                            f"[PIPELINE] Total detectado via DOM: {expected_pages} páginas"
-                        )
-                        if on_total_detected:
-                            on_total_detected(expected_pages)
-                except Exception:
-                    pass
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+                    return 0
 
             logging.info(
                 "[PIPELINE] Acionando Scroll Brutal e Next Page para provocar Lazy Load..."
@@ -588,6 +613,12 @@ class SakuraScraper:
                 logging.error(
                     f"[PIPELINE] Fim da linha. {len(faltantes_final)} imagens não puderam ser salvas."
                 )
+
+            if _session_closed and not expected_pages:
+                logging.warning(
+                    "[PIPELINE] Sessão encerrada sem total de páginas conhecido. Descartando download incompleto."
+                )
+                return 0
 
             interceptor.finalize_and_rename_images()
 
