@@ -358,6 +358,7 @@ class SakuraScraper:
 
             # Plano C: múltiplos reloads — o site entrega lazy-load em lotes, cada F5 desbloqueia o próximo
             # ponytail: 5 reloads cobre capítulos de até ~600 págs em lotes de ~22; aumentar se necessário
+            # ponytail: waits altos + jitter previnem ban de IP — CF interpreta reloads rápidos como ataque
             for reload_num in range(1, 6):
                 faltantes = interceptor.get_missing_urls()
                 needs_reload = bool(faltantes) or (
@@ -375,7 +376,11 @@ class SakuraScraper:
                 )
                 try:
                     page.reload(wait_until="domcontentloaded", timeout=60000)
-                    wait_secs = 30 if reload_num == 1 else 15
+                    wait_secs = (
+                        random.randint(45, 60)
+                        if reload_num == 1
+                        else random.randint(30, 45)
+                    )
                     logging.info(
                         f"[PIPELINE] F5 #{reload_num} concluído. Aguardando {wait_secs}s..."
                     )
