@@ -55,6 +55,17 @@ class ImageInterceptor:
             except Exception as e:
                 logging.error(f"  -> [-] Falha ao salvar {temp_filename}: {e}")
 
+    def sync_from_lp_patcher(self, page):
+        """Popula ordered_urls e drm_headers a partir do fetch patcher do Lightpanda."""
+        try:
+            captured = page.evaluate("() => window.__lp || {urls: [], headers: {}}")
+        except Exception:
+            return
+        for url in captured.get("urls", []):
+            if url not in self.ordered_urls:
+                self.ordered_urls.append(url)
+        self.drm_headers.update(captured.get("headers", {}))
+
     def rescue_missing_images_via_js(self, page):
         """Usa JS Blob e senhas DRM interceptadas para resgatar imagens perdidas."""
         import json

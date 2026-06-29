@@ -66,6 +66,15 @@ class SakuraScraper:
             f"--window-size={viewport['width']},{viewport['height']}",
         ]
 
+        proxy_server = os.environ.get("PROXY_SERVER", "")
+        proxy = None
+        if proxy_server:
+            proxy = {"server": proxy_server}
+            if os.environ.get("PROXY_USERNAME"):
+                proxy["username"] = os.environ["PROXY_USERNAME"]
+            if os.environ.get("PROXY_PASSWORD"):
+                proxy["password"] = os.environ["PROXY_PASSWORD"]
+
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             headless=headless,
@@ -74,7 +83,17 @@ class SakuraScraper:
             viewport=viewport,
             locale="pt-BR",
             timezone_id="America/Sao_Paulo",
+            proxy=proxy,
         )
+
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file) as f:
+                    state = json.load(f)
+                if state.get("cookies"):
+                    context.add_cookies(state["cookies"])
+            except Exception:
+                pass
 
         page = context.pages[0] if context.pages else context.new_page()
 
@@ -94,8 +113,127 @@ class SakuraScraper:
 
         return context, page
 
+    def _connect_lightpanda(self, p, url, interceptor=None):
+        """Tenta navegar via Lightpanda Cloud CDP. Levanta exceção se não disponível ou bloqueado."""
+        token = os.environ.get("LIGHTPANDA_TOKEN", "")
+        if not token:
+            raise RuntimeError("LIGHTPANDA_TOKEN não definido")
+
+        region = os.environ.get("LIGHTPANDA_REGION", "euwest")
+        proxy = os.environ.get("LIGHTPANDA_PROXY", "datacenter")
+        country = os.environ.get("LIGHTPANDA_COUNTRY", "br")
+        cdp_ws = f"wss://{region}.cloud.lightpanda.io/ws?token={token}&browser=chrome&proxy={proxy}&country={country}"
+
+        browser = p.chromium.connect_over_cdp(cdp_ws, timeout=30000)
+        context = None
+        try:
+            storage = None
+            if os.path.exists(self.state_file):
+                try:
+                    with open(self.state_file) as f:
+                        storage = json.load(f)
+                except Exception:
+                    pass
+
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080},
+                locale="pt-BR",
+                timezone_id="America/Sao_Paulo",
+                storage_state=storage,
+            )
+            # ponytail: fecha o browser CDP quando o caller fechar o context
+            context.on("close", lambda: browser.close())
+
+            page = context.new_page()
+            page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            if interceptor:
+                page.add_init_script("""(function() {
+                    window.__lp = { urls: [], headers: {} };
+                    window.fetch = new Proxy(window.fetch, {
+                        apply: function(target, thisArg, args) {
+                            var url = args[0], opts = args[1];
+                            if (typeof url === 'string' && url.indexOf('/imagens/') !== -1 && url.endsWith('.jpg')) {
+                                if (window.__lp.urls.indexOf(url) === -1) window.__lp.urls.push(url);
+                                if (opts && opts.headers) {
+                                    var h = opts.headers;
+                                    if (typeof Headers !== 'undefined' && h instanceof Headers) {
+                                        var tmp = {}; h.forEach(function(v,k){ tmp[k]=v; }); h = tmp;
+                                    }
+                                    Object.keys(h).forEach(function(k) {
+                                        var kl = k.toLowerCase();
+                                        if (kl.startsWith('x-') && kl !== 'x-requested-with' && kl !== 'x-forwarded-for')
+                                            window.__lp.headers[k] = h[k];
+                                    });
+                                }
+                            }
+                            return Reflect.apply(target, thisArg, args);
+                        }
+                    });
+                })();""")
+            if interceptor:
+                page.on("response", interceptor.handle_response)
+
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as e:
+                raise RuntimeError(f"Falha ao navegar com Lightpanda: {e}") from e
+            if "/manutencao/" in page.url or "block.php" in page.url:
+                raise RuntimeError(f"Site bloqueou acesso (redirect para {page.url})")
+            try:
+                body_text = (
+                    page.evaluate("() => document.body ? document.body.innerText : ''")
+                    or ""
+                )
+                if "conflito entre" in body_text.lower():
+                    raise RuntimeError(
+                        "Lightpanda bloqueado: Conflito entre códigos detectado"
+                    )
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+            cf_status = handle_cloudflare(
+                page, context, self.state_file, is_headless=True
+            )
+        except Exception:
+            try:
+                context.close() if context else browser.close()
+            except Exception:
+                pass
+            raise
+
+        if cf_status == "NEEDS_HEADFUL":
+            context.close()
+            raise RuntimeError("Lightpanda bloqueado pelo Cloudflare")
+
+        return context, page
+
     def _navigate_with_cf_bypass(self, p, url, interceptor=None):
-        """Acessa a URL, verifica o Cloudflare e reinicia em modo visual se o Headless for bloqueado."""
+        """Acessa a URL via Lightpanda (primário) ou browser local (fallback)."""
+        token = os.environ.get("LIGHTPANDA_TOKEN", "")
+        if token:
+            lp_retries = int(os.environ.get("LIGHTPANDA_RETRIES", "3"))
+            for attempt in range(1, lp_retries + 1):
+                try:
+                    logging.info(
+                        f"[PIPELINE] Tentando Lightpanda Cloud (tentativa {attempt}/{lp_retries})..."
+                    )
+                    return self._connect_lightpanda(p, url, interceptor)
+                except Exception as e:
+                    logging.warning(
+                        f"[PIPELINE] Lightpanda tentativa {attempt} falhou: {e}."
+                    )
+                    if attempt < lp_retries:
+                        logging.info(
+                            "[PIPELINE] Trocando IP via nova sessão Lightpanda..."
+                        )
+            logging.warning(
+                "[PIPELINE] Todas as tentativas Lightpanda falharam. Usando fallback local."
+            )
+
         current_headless = self.headless
         context, page = self._launch_browser(p, headless=current_headless)
 
@@ -242,55 +380,74 @@ class SakuraScraper:
             stable_count = 0
             forced_continuations = 0
 
-            while timeout > 0:
-                current_len = len(interceptor.downloaded_files)
+            _session_closed = False
+            try:
+                while timeout > 0:
+                    if "/manutencao/" in page.url or "block.php" in page.url:
+                        logging.warning(
+                            "[PIPELINE] Site bloqueou durante scroll. Abortando."
+                        )
+                        break
+                    if timeout % 5 == 0:
+                        try:
+                            blocked = page.evaluate(
+                                "() => document.body ? document.body.innerText.includes('atividade incomum') : false"
+                            )
+                            if blocked:
+                                logging.warning(
+                                    "[PIPELINE] Site detectou atividade incomum. Abortando scroll."
+                                )
+                                break
+                        except Exception:
+                            pass
+                    current_len = len(interceptor.downloaded_files)
 
-                if expected_pages and current_len >= expected_pages:
-                    logging.info(
-                        f"[PIPELINE] Todas as {expected_pages} imagens capturadas! Encerrando scroll."
-                    )
-                    break
+                    if expected_pages and current_len >= expected_pages:
+                        logging.info(
+                            f"[PIPELINE] Todas as {expected_pages} imagens capturadas! Encerrando scroll."
+                        )
+                        break
 
-                # Distribuição humana de scroll: maioria lendo (curto), às vezes pulando (longo)
-                r = random.random()
-                if r < 0.60:
-                    scroll_dist = random.randint(350, 850)  # ritmo de leitura
-                elif r < 0.90:
-                    scroll_dist = random.randint(850, 1600)  # folhear rápido
-                else:
-                    scroll_dist = random.randint(1600, 2600)  # pulo grande
-                page.mouse.wheel(0, scroll_dist)
+                    # Distribuição humana de scroll: maioria lendo (curto), às vezes pulando (longo)
+                    r = random.random()
+                    if r < 0.60:
+                        scroll_dist = random.randint(350, 850)  # ritmo de leitura
+                    elif r < 0.90:
+                        scroll_dist = random.randint(850, 1600)  # folhear rápido
+                    else:
+                        scroll_dist = random.randint(1600, 2600)  # pulo grande
+                    page.mouse.wheel(0, scroll_dist)
 
-                # Pausa bimodal: olhada rápida vs lendo a página com calma
-                if random.random() < 0.30:
-                    page.wait_for_timeout(random.randint(400, 900))
-                else:
-                    page.wait_for_timeout(random.randint(1000, 2500))
+                    # Pausa bimodal: olhada rápida vs lendo a página com calma
+                    if random.random() < 0.30:
+                        page.wait_for_timeout(random.randint(400, 900))
+                    else:
+                        page.wait_for_timeout(random.randint(1000, 2500))
 
-                if random.random() < 0.10:
-                    logging.info(
-                        "  -> [STEALTH] Simulando leitura atenta (pausa dramática na página)..."
-                    )
-                    page.wait_for_timeout(random.randint(4000, 8000))
+                    if random.random() < 0.10:
+                        logging.info(
+                            "  -> [STEALTH] Simulando leitura atenta (pausa dramática na página)..."
+                        )
+                        page.wait_for_timeout(random.randint(4000, 8000))
 
-                # ponytail: back-scroll desativado durante recovery — windowed renderers removem DOM nodes ao subir
-                if random.random() < 0.15 and forced_continuations == 0:
-                    logging.info(
-                        "  -> [STEALTH] Rolou muito rápido! Subindo a tela para reler..."
-                    )
-                    page.mouse.wheel(0, random.randint(-600, -200))
-                    page.wait_for_timeout(random.randint(600, 1400))
+                    # ponytail: back-scroll desativado durante recovery — windowed renderers removem DOM nodes ao subir
+                    if random.random() < 0.15 and forced_continuations == 0:
+                        logging.info(
+                            "  -> [STEALTH] Rolou muito rápido! Subindo a tela para reler..."
+                        )
+                        page.mouse.wheel(0, random.randint(-600, -200))
+                        page.wait_for_timeout(random.randint(600, 1400))
 
-                # Mouse move restrito à coluna de leitura central (não voa para cantos)
-                if random.random() < 0.12:
-                    page.mouse.move(
-                        random.randint(300, 750),
-                        random.randint(200, 600),
-                        steps=random.randint(5, 15),
-                    )
-                    page.wait_for_timeout(random.randint(100, 300))
+                    # Mouse move restrito à coluna de leitura central (não voa para cantos)
+                    if random.random() < 0.12:
+                        page.mouse.move(
+                            random.randint(300, 750),
+                            random.randint(200, 600),
+                            steps=random.randint(5, 15),
+                        )
+                        page.wait_for_timeout(random.randint(100, 300))
 
-                is_bottom = page.evaluate("""() => {
+                    is_bottom = page.evaluate("""() => {
                     const footer = document.querySelector('.footer-text-col');
                     if (footer) {
                         const rect = footer.getBoundingClientRect();
@@ -299,67 +456,79 @@ class SakuraScraper:
                     return window.scrollY + window.innerHeight >= document.body.scrollHeight - 200;
                 }""")
 
-                if current_len > 0:
-                    if current_len == last_len:
-                        stable_count += 1
-                        max_wait = 3 if is_bottom else 15
+                    if current_len > 0:
+                        if current_len == last_len:
+                            stable_count += 1
+                            max_wait = 3 if is_bottom else 15
 
-                        if stable_count >= max_wait:
-                            if (
-                                expected_pages
-                                and len(interceptor.ordered_urls) < expected_pages
-                                and forced_continuations < 8
-                            ):
-                                forced_continuations += 1
+                            if stable_count >= max_wait:
+                                if (
+                                    expected_pages
+                                    and len(interceptor.ordered_urls) < expected_pages
+                                    and forced_continuations < 8
+                                ):
+                                    forced_continuations += 1
+                                    logging.info(
+                                        f"[PIPELINE] {len(interceptor.ordered_urls)}/{expected_pages} URLs. Forçando scroll agressivo ({forced_continuations}/8)..."
+                                    )
+                                    page.mouse.wheel(0, random.randint(3000, 6000))
+                                    page.evaluate(
+                                        "window.scrollTo(0, document.body.scrollHeight)"
+                                    )
+                                    page.wait_for_timeout(random.randint(2000, 4000))
+                                    stable_count = 0
+                                    continue
                                 logging.info(
-                                    f"[PIPELINE] {len(interceptor.ordered_urls)}/{expected_pages} URLs. Forçando scroll agressivo ({forced_continuations}/8)..."
+                                    f"[PIPELINE] Rodapé atingido / Sem novas imagens. Total de páginas: {current_len}"
                                 )
-                                page.mouse.wheel(0, random.randint(3000, 6000))
-                                page.evaluate(
-                                    "window.scrollTo(0, document.body.scrollHeight)"
-                                )
-                                page.wait_for_timeout(random.randint(2000, 4000))
-                                stable_count = 0
-                                continue
-                            logging.info(
-                                f"[PIPELINE] Rodapé atingido / Sem novas imagens. Total de páginas: {current_len}"
-                            )
-                            break
+                                break
+                        else:
+                            last_len = current_len
+                            stable_count = 0
                     else:
-                        last_len = current_len
-                        stable_count = 0
-                else:
-                    try:
-                        page.mouse.click(500, 500)
-                    except Exception:
-                        pass
+                        try:
+                            page.mouse.click(500, 500)
+                        except Exception:
+                            pass
 
-                timeout -= 1
-                if (
-                    timeout == 0
-                    and expected_pages
-                    and len(interceptor.ordered_urls) < expected_pages
-                    and forced_continuations < 8
+                    timeout -= 1
+                    if (
+                        timeout == 0
+                        and expected_pages
+                        and len(interceptor.ordered_urls) < expected_pages
+                        and forced_continuations < 8
+                    ):
+                        forced_continuations += 1
+                        timeout = 15
+                        logging.info(
+                            f"[PIPELINE] Timeout com {len(interceptor.ordered_urls)}/{expected_pages} URLs. Estendendo scroll ({forced_continuations}/8)..."
+                        )
+                        page.mouse.wheel(0, random.randint(3000, 6000))
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        page.wait_for_timeout(random.randint(2000, 4000))
+                        stable_count = 0
+                    if timeout % 10 == 0 and timeout > 0:
+                        logging.info(f"[PIPELINE] Coletadas até agora: {current_len}")
+            except Exception as _scroll_err:
+                _msg = str(_scroll_err).lower()
+                if any(
+                    k in _msg for k in ("closed", "target", "disconnect", "session")
                 ):
-                    forced_continuations += 1
-                    timeout = 15
-                    logging.info(
-                        f"[PIPELINE] Timeout com {len(interceptor.ordered_urls)}/{expected_pages} URLs. Estendendo scroll ({forced_continuations}/8)..."
+                    logging.warning(
+                        f"[PIPELINE] Sessão remota encerrada durante scroll: {_scroll_err}"
                     )
-                    page.mouse.wheel(0, random.randint(3000, 6000))
-                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    page.wait_for_timeout(random.randint(2000, 4000))
-                    stable_count = 0
-                if timeout % 10 == 0 and timeout > 0:
-                    logging.info(f"[PIPELINE] Coletadas até agora: {current_len}")
+                    _session_closed = True
+                else:
+                    raise
 
             # Resgate Passivo via JS Fetch Blob
+            interceptor.sync_from_lp_patcher(page)
             interceptor.rescue_missing_images_via_js(page)
 
             # Plano C: múltiplos reloads — o site entrega lazy-load em lotes, cada F5 desbloqueia o próximo
             # ponytail: 5 reloads cobre capítulos de até ~600 págs em lotes de ~22; aumentar se necessário
             # ponytail: waits altos + jitter previnem ban de IP — CF interpreta reloads rápidos como ataque
-            for reload_num in range(1, 6):
+            for reload_num in range(1, 6) if not _session_closed else []:
                 faltantes = interceptor.get_missing_urls()
                 needs_reload = bool(faltantes) or (
                     expected_pages and len(interceptor.ordered_urls) < expected_pages
@@ -406,6 +575,7 @@ class SakuraScraper:
                         if is_at_bottom:
                             page.wait_for_timeout(2000)
 
+                    interceptor.sync_from_lp_patcher(page)
                     interceptor.rescue_missing_images_via_js(page)
                     logging.info(
                         f"[PIPELINE] Reload #{reload_num}: {len(interceptor.ordered_urls)}/{expected_pages or '?'} URLs encontradas."
@@ -434,7 +604,10 @@ class SakuraScraper:
                 format_state_file(self.state_file)
             except Exception:
                 pass
-            context.close()
+            try:
+                context.close()
+            except Exception:
+                pass
 
             if len(final_missing) > 0:
                 logging.info("│ 🔴 RESULTADO: FALHA PARCIAL")
