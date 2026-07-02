@@ -834,9 +834,15 @@ class SakuraScraper:
 
     def download_cover(self, url, output_path):
         """Baixa a capa usando o Playwright para aproveitar os cookies do Cloudflare."""
+        # Último vetor de navegação: também passa pelo disjuntor + token bucket
+        # para não gastar requisição fora do ritmo governado.
+        if get_breaker().is_open():
+            logging.warning("[ANTI-BAN] Circuito aberto — pulando download da capa.")
+            return
         with sync_playwright() as p:
             context, page = self._launch_browser(p)
             try:
+                get_governor().wait_turn("baixar capa")
                 response = page.goto(url, timeout=30000)
                 if response and response.status == 200:
                     with open(output_path, "wb") as f:
