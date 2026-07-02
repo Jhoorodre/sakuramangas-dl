@@ -79,18 +79,15 @@ def handle_cloudflare(page, context, state_file, is_headless=False):
                     pass
                 break
             try:
-                # Simula movimento de mouse humano cruzando a tela para burlar a biometria
+                # Apenas movimento de mouse humano (biometria). Clique cego em
+                # tela cheia foi removido: acerta o checkbox raramente e o WAF
+                # pode interpretar como envio de dados malformados (gatilho de 1020).
                 page.mouse.move(
                     random.randint(100, 800),
                     random.randint(100, 600),
                     steps=random.randint(5, 15),
                 )
                 page.wait_for_timeout(random.randint(200, 600))
-                page.mouse.click(
-                    random.randint(100, 800),
-                    random.randint(100, 600),
-                    delay=random.randint(50, 200),
-                )
             except Exception:
                 pass
             page.wait_for_timeout(random.randint(850, 2400))

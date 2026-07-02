@@ -12,6 +12,13 @@ from src.core.utils import (
     JS_EXTRACT_MANGA,
     format_state_file,
 )
+from src.core.anti_ban import (
+    get_governor,
+    get_breaker,
+    assess_page,
+    BlockType,
+    BlockedError,
+)
 
 
 class SakuraScraper:
@@ -176,6 +183,7 @@ class SakuraScraper:
             if interceptor:
                 page.on("response", interceptor.handle_response)
 
+            get_governor().wait_turn("navegar (lightpanda)")
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
             except Exception as e:
@@ -240,10 +248,22 @@ class SakuraScraper:
         if interceptor:
             page.on("response", interceptor.handle_response)
 
+        get_governor().wait_turn("navegar")
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
         except Exception as e:
             logging.error(f"[PIPELINE] Erro ao carregar página: {e}")
+
+        # Detecção precoce de bloqueio de firewall (1020/1015): reabrir o
+        # navegador não ajuda quando o IP está banido — abre o circuito e aborta.
+        block = assess_page(page)
+        if block in (BlockType.BLOCKED, BlockType.RATE_LIMITED, BlockType.MAINTENANCE):
+            get_breaker().trip(f"WAF {block} ao navegar")
+            try:
+                context.close()
+            except Exception:
+                pass
+            raise BlockedError(f"Cloudflare {block}")
 
         cf_status = handle_cloudflare(
             page, context, self.state_file, is_headless=current_headless
@@ -268,10 +288,24 @@ class SakuraScraper:
             if interceptor:
                 page.on("response", interceptor.handle_response)
 
+            get_governor().wait_turn("reabrir headful")
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
             except Exception:
                 pass
+
+            block = assess_page(page)
+            if block in (
+                BlockType.BLOCKED,
+                BlockType.RATE_LIMITED,
+                BlockType.MAINTENANCE,
+            ):
+                get_breaker().trip(f"WAF {block} no headful")
+                try:
+                    context.close()
+                except Exception:
+                    pass
+                raise BlockedError(f"Cloudflare {block}")
 
             handle_cloudflare(
                 page, context, self.state_file, is_headless=current_headless
@@ -334,6 +368,15 @@ class SakuraScraper:
                 )
                 skip_existing = True
 
+        # Disjuntor: se um bloqueio 1020 já abriu o circuito, nem abre o navegador.
+        breaker = get_breaker()
+        if breaker.is_open():
+            logging.error(
+                f"[ANTI-BAN] Circuito aberto — pulando capítulo. "
+                f"Faltam {breaker.remaining() / 60:.0f} min de cooldown."
+            )
+            return 0
+
         logging.info(
             f"[PIPELINE] Preparando ambiente. Modo Headless Base: {self.headless}"
         )
@@ -343,9 +386,16 @@ class SakuraScraper:
             interceptor = ImageInterceptor(output_dir, skip_existing=skip_existing)
             logging.info("[PIPELINE] Acessando SakuraMangas...")
 
-            context, page = self._navigate_with_cf_bypass(
-                p, url, interceptor=interceptor
-            )
+            try:
+                context, page = self._navigate_with_cf_bypass(
+                    p, url, interceptor=interceptor
+                )
+            except BlockedError as e:
+                logging.error(
+                    f"[ANTI-BAN] Bloqueio do Cloudflare ao acessar o capítulo: {e}. "
+                    "Interrompendo (circuito aberto)."
+                )
+                return 0
 
             logging.info("[PIPELINE] Aguardando primeiras imagens carregarem...")
             try:
@@ -550,10 +600,21 @@ class SakuraScraper:
             interceptor.sync_from_lp_patcher(page)
             interceptor.rescue_missing_images_via_js(page)
 
-            # Plano C: múltiplos reloads — o site entrega lazy-load em lotes, cada F5 desbloqueia o próximo
-            # ponytail: 5 reloads cobre capítulos de até ~600 págs em lotes de ~22; aumentar se necessário
-            # ponytail: waits altos + jitter previnem ban de IP — CF interpreta reloads rápidos como ataque
-            for reload_num in range(1, 6) if not _session_closed else []:
+            # Plano C: reloads — o site entrega lazy-load em lotes, cada F5 desbloqueia o próximo.
+            # Cada reload é uma navegação nova, então é um vetor de ban: fica limitado
+            # (AB_MAX_RELOADS, padrão 2), governado pelo token bucket e interrompido ao
+            # primeiro sinal de bloqueio. O smart-resume recupera o resto na próxima execução.
+            try:
+                _max_reloads = int(os.environ.get("AB_MAX_RELOADS", "2"))
+            except (ValueError, TypeError):
+                _max_reloads = 2
+            reload_range = range(1, _max_reloads + 1) if not _session_closed else []
+            for reload_num in reload_range:
+                if get_breaker().is_open():
+                    logging.error(
+                        "[ANTI-BAN] Circuito aberto durante os reloads. Interrompendo."
+                    )
+                    break
                 faltantes = interceptor.get_missing_urls()
                 needs_reload = bool(faltantes) or (
                     expected_pages and len(interceptor.ordered_urls) < expected_pages
@@ -569,7 +630,19 @@ class SakuraScraper:
                     f"\n[PIPELINE] {motivo}. Acionando PLANO C: Reload {reload_num}/5..."
                 )
                 try:
+                    get_governor().wait_turn("reload")
                     page.reload(wait_until="domcontentloaded", timeout=60000)
+                    block = assess_page(page)
+                    if block in (
+                        BlockType.BLOCKED,
+                        BlockType.RATE_LIMITED,
+                        BlockType.MAINTENANCE,
+                    ):
+                        get_breaker().trip(f"WAF {block} durante reload")
+                        logging.error(
+                            "[ANTI-BAN] Bloqueio detectado no reload. Interrompendo."
+                        )
+                        break
                     wait_secs = (
                         random.randint(45, 60)
                         if reload_num == 1
@@ -682,9 +755,16 @@ class SakuraScraper:
     def search_manga(self, query):
         """Pesquisa um mangá pelo nome e retorna uma lista de resultados {title, url}."""
         logging.info(f"[*] Pesquisando por: {query}")
+        if get_breaker().is_open():
+            logging.error("[ANTI-BAN] Circuito aberto — pesquisa cancelada.")
+            return []
         with sync_playwright() as p:
             search_url = f"https://sakuramangas.org/?s={quote_plus(query)}"
-            context, page = self._navigate_with_cf_bypass(p, search_url)
+            try:
+                context, page = self._navigate_with_cf_bypass(p, search_url)
+            except BlockedError as e:
+                logging.error(f"[ANTI-BAN] Bloqueio na pesquisa: {e}")
+                return []
 
             try:
                 results = page.evaluate("""() => {
@@ -714,8 +794,18 @@ class SakuraScraper:
         """Acessa a página principal do mangá e extrai a lista completa de capítulos"""
         logging.info(f"[*] Preparando extração de capítulos para: {url}")
 
+        if get_breaker().is_open():
+            logging.error(
+                "[ANTI-BAN] Circuito aberto — extração de capítulos cancelada."
+            )
+            return None
+
         with sync_playwright() as p:
-            context, page = self._navigate_with_cf_bypass(p, url)
+            try:
+                context, page = self._navigate_with_cf_bypass(p, url)
+            except BlockedError as e:
+                logging.error(f"[ANTI-BAN] Bloqueio ao extrair capítulos: {e}")
+                return None
 
             try:
                 # Extração de Capítulos (Modularizado)

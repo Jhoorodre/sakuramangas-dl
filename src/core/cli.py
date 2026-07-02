@@ -5,6 +5,74 @@ import shutil
 
 from src.core.scraper import SakuraScraper
 from src.core.manga_manager import MangaManager
+from src.core.anti_ban import get_breaker, human_pause
+
+
+def _cooldown_guard():
+    """Retorna True (e imprime aviso) se o circuito anti-ban estiver aberto —
+    sinal para não iniciar/continuar downloads e proteger o IP."""
+    breaker = get_breaker()
+    if breaker.is_open():
+        mins = breaker.remaining() / 60
+        print(
+            f"\n[ANTI-BAN] 🔴 Em cooldown de proteção por mais ~{mins:.0f} min "
+            "(bloqueio do Cloudflare detectado)."
+        )
+        print(
+            "           Aguarde o tempo acabar ou troque de IP (ex.: hotspot do "
+            "celular) antes de tentar de novo."
+        )
+        return True
+    return False
+
+
+def _download_with_backoff(scraper, **kwargs):
+    """Baixa um capítulo com retries em backoff exponencial + jitter, parando
+    imediatamente se o circuito abrir (bloqueio real). Só reintenta falha
+    'mole' (capítulo incompleto), nunca martela um IP bloqueado.
+
+    Retorna (result, blocked): result = nº de páginas (0 se falhou);
+    blocked = True se o circuito abriu durante as tentativas."""
+    try:
+        max_retries = int(os.environ.get("DOWNLOAD_RETRIES", "3"))
+    except (ValueError, TypeError):
+        max_retries = 3
+    try:
+        backoff_base = float(os.environ.get("AB_RETRY_BACKOFF", "30"))
+    except (ValueError, TypeError):
+        backoff_base = 30.0
+
+    breaker = get_breaker()
+    for attempt in range(max_retries):
+        if breaker.is_open():
+            return 0, True
+        try:
+            result = scraper.download_chapter(**kwargs)
+        except Exception as dl_err:
+            print(
+                f"    -> [ERRO] Exceção no download (tentativa {attempt + 1}): {dl_err}"
+            )
+            result = 0
+
+        if result:
+            breaker.record_success()
+            return result, False
+
+        # Falhou. Se foi bloqueio, o breaker já está aberto — não reintenta.
+        if breaker.is_open():
+            return 0, True
+        tripped = breaker.record_failure("capítulo incompleto")
+        if tripped:
+            return 0, True
+        if attempt < max_retries - 1:
+            wait = backoff_base * (2**attempt)
+            wait += random.uniform(0, wait * 0.5)  # full-ish jitter
+            print(
+                f"    -> [RETRY {attempt + 1}/{max_retries}] Incompleto. "
+                f"Aguardando {wait:.0f}s (backoff) antes de retentar..."
+            )
+            time.sleep(wait)
+    return 0, False
 
 
 def clear_screen():
@@ -41,6 +109,11 @@ def download_chapters(headless=True):
         return
 
     scraper = SakuraScraper(headless=headless)
+
+    if _cooldown_guard():
+        input("\nPressione Enter para voltar ao menu...")
+        return
+
     links = []
 
     if escolha.isdigit() and 1 <= int(escolha) <= len(toml_links):
@@ -104,6 +177,11 @@ def download_chapters(headless=True):
             primary_caps = MangaManager.get_primary_chapters(chapters_dict)
 
             for cap_id, cap in reversed(list(chapters_dict.items())):
+                if get_breaker().is_open():
+                    print(
+                        "  -> [ANTI-BAN] Circuito aberto. Interrompendo os downloads."
+                    )
+                    break
                 if cap_id not in primary_caps:
                     cap["downloaded"] = False
                     continue
@@ -178,8 +256,9 @@ def download_chapters(headless=True):
                             _cap["total_pages"] = total
                             MangaManager.update_latest_downloaded(_data, _path)
 
-                        result = scraper.download_chapter(
-                            url,
+                        result, blocked = _download_with_backoff(
+                            scraper,
+                            url=url,
                             manga_name=manga_folder,
                             chapter_name=chapter_folder,
                             expected_pages=cap.get("total_pages"),
@@ -192,7 +271,7 @@ def download_chapters(headless=True):
                             MangaManager.update_latest_downloaded(
                                 manga_data, json_path_data
                             )
-                            time.sleep(random.uniform(5, 12))
+                            human_pause("entre capítulos")
                         else:
                             cap["pages_on_disk"] = (
                                 sum(
@@ -206,6 +285,11 @@ def download_chapters(headless=True):
                             MangaManager.update_latest_downloaded(
                                 manga_data, json_path_data
                             )
+                            if blocked:
+                                print(
+                                    "  -> [ANTI-BAN] Bloqueio ativo. Interrompendo os downloads desta obra."
+                                )
+                                break
 
             MangaManager.update_latest_downloaded(manga_data, json_path_data)
 
@@ -257,8 +341,15 @@ def download_complete_manga(headless=True):
 
     scraper = SakuraScraper(headless=headless)
 
+    if _cooldown_guard():
+        input("\nPressione Enter para voltar ao menu...")
+        return
+
     print("\n🚀 Iniciando Sincronização Ponta-a-Ponta...")
     for link in links:
+        if _cooldown_guard():
+            print("[ANTI-BAN] Interrompendo a sincronização em massa.")
+            break
         print("\n==========================================")
         print(f"[*] Processando Obra: {link}")
         try:
@@ -293,6 +384,9 @@ def download_complete_manga(headless=True):
             primary_caps = MangaManager.get_primary_chapters(chapters_dict)
 
             for cap_id, cap in reversed(list(chapters_dict.items())):
+                if get_breaker().is_open():
+                    print("  -> [ANTI-BAN] Circuito aberto. Interrompendo esta obra.")
+                    break
                 if cap_id not in primary_caps:
                     cap["downloaded"] = False
                     continue
@@ -378,38 +472,21 @@ def download_complete_manga(headless=True):
                             _cap["total_pages"] = total
                             MangaManager.update_latest_downloaded(_data, _path)
 
-                        try:
-                            _max_retries = int(os.environ.get("DOWNLOAD_RETRIES", "5"))
-                        except (ValueError, TypeError):
-                            _max_retries = 5
-                        result = 0
-                        for _retry in range(_max_retries):
-                            try:
-                                result = scraper.download_chapter(
-                                    url,
-                                    manga_name=manga_folder,
-                                    chapter_name=chapter_folder,
-                                    expected_pages=cap.get("total_pages"),
-                                    on_total_detected=_save_total,
-                                )
-                            except Exception as _dl_err:
-                                print(
-                                    f"    -> [ERRO] Exceção no download (tentativa {_retry + 1}): {_dl_err}"
-                                )
-                                result = 0
-                            if result:
-                                break
-                            if _retry < _max_retries - 1:
-                                print(
-                                    f"    -> [RETRY {_retry + 1}/{_max_retries}] Capítulo incompleto. Retentando..."
-                                )
+                        result, blocked = _download_with_backoff(
+                            scraper,
+                            url=url,
+                            manga_name=manga_folder,
+                            chapter_name=chapter_folder,
+                            expected_pages=cap.get("total_pages"),
+                            on_total_detected=_save_total,
+                        )
 
                         if result:
                             cap["downloaded"] = True
                             cap["total_pages"] = result
                             cap.pop("pages_on_disk", None)
                             MangaManager.update_latest_downloaded(manga_data, json_path)
-                            time.sleep(random.uniform(5, 12))
+                            human_pause("entre capítulos")
                         else:
                             cap["pages_on_disk"] = (
                                 sum(
@@ -421,6 +498,11 @@ def download_complete_manga(headless=True):
                                 else 0
                             )
                             MangaManager.update_latest_downloaded(manga_data, json_path)
+                            if blocked:
+                                print(
+                                    "  -> [ANTI-BAN] Bloqueio ativo. Interrompendo esta obra para proteger o IP."
+                                )
+                                break
 
             MangaManager.update_latest_downloaded(manga_data, json_path)
             print(f"[+] Obra {manga_folder} finalizada com sucesso!")
@@ -472,7 +554,14 @@ def sync_metadata_only(headless=True):
 
     scraper = SakuraScraper(headless=headless)
 
+    if _cooldown_guard():
+        input("\nPressione Enter para voltar ao menu...")
+        return
+
     for link in links:
+        if _cooldown_guard():
+            print("[ANTI-BAN] Interrompendo a sincronização de metadados.")
+            break
         print(f"\n[*] Extraindo lista de capítulos para: {link}")
         try:
             manga_data = scraper.get_chapters(link)
